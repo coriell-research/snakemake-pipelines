@@ -22,7 +22,8 @@ rule all:
         expand(f"{FASTP_OUT}/{{sample}}.fastp.json", sample=SAMPLES_LIST),
         f"{MULTIQC_OUT}/multiqc_report.html",
         expand(f"{RSEQC_OUT}/{{sample}}.read_distribution.txt", sample=SAMPLES_LIST),
-        expand(f"{RSEQC_OUT}/{{sample}}.Aligned.sortedByCoord.out.tin.xls", sample=SAMPLES_LIST)
+        expand(f"{RSEQC_OUT}/{{sample}}.Aligned.sortedByCoord.out.tin.xls", sample=SAMPLES_LIST),
+        expand(f"{RSEQC_OUT}/{{sample}}.Aligned.sortedByCoord.out.summary.txt", sample=SAMPLES_LIST)
 
 
 rule fastp:
@@ -178,7 +179,8 @@ rule tin:
     input:
         f"{STAR_OUT}/{{sample}}.Aligned.sortedByCoord.out.bam"
     output:
-        f"{RSEQC_OUT}/{{sample}}.Aligned.sortedByCoord.out.tin.xls"
+        out_tin = f"{RSEQC_OUT}/{{sample}}.Aligned.sortedByCoord.out.tin.xls",
+        out_summary = f"{RSEQC_OUT}/{{sample}}.Aligned.sortedByCoord.out.summary.txt"
     log:
         f"{RSEQC_OUT}/{{sample}}.tin.log"
     params:
@@ -193,6 +195,6 @@ rule tin:
           -r {params.gene_model} \
           -c {params.min_cov} \
           -n {params.sample_size} && \
-          mv {{sample}}.Aligned.sortedByCoord.out.tin.xls {output} && \
-          mv {{sample}}.Aligned.sortedByCoord.out.summary.txt {output}
+          mv {{sample}}.Aligned.sortedByCoord.out.tin.xls {output.out_tin} && \
+          mv {{sample}}.Aligned.sortedByCoord.out.summary.txt {output.out_summary}
         """
