@@ -22,7 +22,7 @@ rule all:
         expand(f"{FASTP_OUT}/{{sample}}.fastp.json", sample=SAMPLES_LIST),
         f"{MULTIQC_OUT}/multiqc_report.html",
         expand(f"{RSEQC_OUT}/{{sample}}.read_distribution.txt", sample=SAMPLES_LIST),
-        expand(f"{STAR_OUT}/{{sample}}.Aligned.sortedByCoord.out.tin.xls", sample=SAMPLES_LIST)
+        expand(f"{RSEQC_OUT}/{{sample}}.Aligned.sortedByCoord.out.tin.xls", sample=SAMPLES_LIST)
 
 
 rule fastp:
@@ -160,7 +160,7 @@ rule multiqc_report:
 
 rule read_distribution:
     input:
-        expand(f"{STAR_OUT}/{{sample}}.Aligned.sortedByCoord.out.bam", sample=SAMPLES_LIST)
+        f"{STAR_OUT}/{{sample}}.Aligned.sortedByCoord.out.bam"
     output:
         report = f"{RSEQC_OUT}/{{sample}}.read_distribution.txt"
     log:
@@ -173,12 +173,12 @@ rule read_distribution:
         """read_distribution.py -i {input} -r {params.gene_model} > {output}"""
 
 
-# tin.py writes the output in the same directory as the BAMs 
+# tin.py writes to working dir 
 rule tin:
     input:
-        expand(f"{STAR_OUT}/{{sample}}.Aligned.sortedByCoord.out.bam", sample=SAMPLES_LIST)
+        f"{STAR_OUT}/{{sample}}.Aligned.sortedByCoord.out.bam"
     output:
-        f"{STAR_OUT}/{{sample}}.Aligned.sortedByCoord.out.tin.xls"
+        f"{RSEQC_OUT}/{{sample}}.Aligned.sortedByCoord.out.tin.xls"
     log:
         f"{RSEQC_OUT}/{{sample}}.tin.log"
     params:
@@ -192,5 +192,7 @@ rule tin:
         tin.py -i {input} \
           -r {params.gene_model} \
           -c {params.min_cov} \
-          -n {params.sample_size}
+          -n {params.sample_size} && \
+          mv {{sample}}.Aligned.sortedByCoord.out.tin.xls {output} && \
+          mv {{sample}}.Aligned.sortedByCoord.out.summary.txt {output}
         """
