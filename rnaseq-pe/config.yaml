@@ -1,0 +1,40 @@
+# Perform adapter detection on the paired-end reads - not default
+fastp:
+  threads: 12
+  extra_params: "--detect_adapter_for_pe"
+
+# Two-pass mode for STAR with (100) multi-mappers included for TEtranscripts
+star:
+  index_dir: "/home/gennaro/data/references/GRCh38/GENCODE/v48/STAR_idx" 
+  threads: 12
+  readFilesCommand: "zcat" 
+  twopassMode: "Basic" 
+  outFilterMultimapNmax: 100 
+  winAnchorMultimapNmax: 100
+  alignSJoverhangMin: 8 
+  alignSJDBoverhangMin: 1 
+  outFilterMismatchNmax: 999 
+  outFilterMismatchNoverLmax: 0.1 
+  alignIntronMin: 20 
+  alignIntronMax: 1000000 
+  alignMatesGapMax: 1000000 
+  outFilterScoreMinOverLread: 0.33 
+  outFilterMatchNminOverLread: 0.33 
+  limitSjdbInsertNsj: 1200000 
+  outSAMstrandField: "intronMotif" 
+  quantMode: "GeneCounts" 
+  outSAMtype: "BAM SortedByCoordinate"
+  outSAMattributes: "Standard"
+
+# Salmon with Gibbs sampling and all bias estimation by default
+salmon:
+  index_dir: "/home/gennaro/data/references/GRCh38/rmskProfiler/hg38-resources_v48/rmsk-salmon_index"
+  threads: 12
+  lib_type: "A"
+  gibbs: 100
+  extra_params: "--gcBias --seqBias --posBias"
+
+rseqc:
+  gene_model: "/home/gennaro/data/references/GRCh38/GENCODE/v48/gencode.v48.basic.annotation.bed"
+  min_cov: 10
+  sample_size: 100

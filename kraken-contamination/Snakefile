@@ -1,0 +1,87 @@
+# This snakemake file takes a simple csv file describing samples and paths to their paired-end reads
+# The Kraken database path is hardcoded into the rule. The Kraken database should be copied into 
+# shared memory. Shared memory may need to be resized to accommodate the database, which is about 
+# 88GB in size. 
+#
+# To resize /dev/shm:
+# sudo mount -o remount,size=100G /dev/shm
+#
+# Then copy the Kraken database into /dev/shm:
+# cp -r /mnt/data/gdata/kraken2/standard /dev/shm/standard
+#
+# -------------------------------------------------------------------------------------------------
+import pandas as pd
+
+
+SAMPLES = pd.read_csv("samples.csv", sep=",", header=0)
+SAMPLES_LIST = SAMPLES["sample_name"].tolist()
+
+WORK_DIR = "../data"
+KRAKEN_OUT = f"{WORK_DIR}/01_kraken"
+BRACKEN_OUT = f"{WORK_DIR}/02_bracken"
+
+
+def get_reads(w):
+    read1_path = SAMPLES.loc[SAMPLES.sample_name == w.sample, "read1"].item()
+    read2_path = SAMPLES.loc[SAMPLES.sample_name == w.sample, "read2"].item()
+
+    if pd.isna(read2_path):
+        return read1_path
+    return [read1_path, read2_path] 
+
+
+def get_read_args(w):
+    read1_path = SAMPLES.loc[SAMPLES.sample_name == w.sample, "read1"].item()
+    read2_path = SAMPLES.loc[SAMPLES.sample_name == w.sample, "read2"].item()
+
+    if pd.isna(read2_path):
+        return read1_path
+    return f"--paired {read1_path} {read2_path}"
+
+
+rule all:
+    input:
+        expand(f"{KRAKEN_OUT}/{{sample}}.kraken.report", sample=SAMPLES_LIST),
+        expand(f"{BRACKEN_OUT}/{{sample}}_species_abundance.txt", sample=SAMPLES_LIST)
+
+rule kraken:
+    input:
+        get_reads 
+    output:
+        classification = f"{KRAKEN_OUT}/{{sample}}.kraken",
+        report = f"{KRAKEN_OUT}/{{sample}}.kraken.report"
+    log:
+        f"{KRAKEN_OUT}/{{sample}}.log"
+    params:
+        db = "/dev/shm/standard",
+        threads = 12,
+        read_args = get_read_args 
+    shell:
+        "kraken2 --db {params.db} "
+        "--threads {params.threads} "
+        "--output {output.classification} "
+        "--report {output.report} "
+        "--use-names "
+        "--memory-mapping "
+        "--gzip-compressed "
+        "{params.read_args} &> {log}"
+
+rule bracken:
+    input:
+        report = f"{KRAKEN_OUT}/{{sample}}.kraken.report"
+    output:
+        abundance = f"{BRACKEN_OUT}/{{sample}}_species_abundance.txt"
+    log:
+        f"{BRACKEN_OUT}/{{sample}}.log"
+    params:
+        db = "/dev/shm/standard",
+        kmer = 150,
+        level = "S",
+        threads = 12
+    shell:
+        "bracken -d {params.db} "
+        "-i {input.report} "
+        "-o {output.abundance} "
+        "-r {params.kmer} "
+        "-l {params.level} &> {log}"
+
