@@ -195,6 +195,6 @@ rule tin:
           -r {params.gene_model} \
           -c {params.min_cov} \
           -n {params.sample_size} && \
-          mv {wildcards.sample}.Aligned.sortedByCoord.out.summary.txt {output.out_summary}
-          mv {wildcards.sample}.Aligned.sortedByCoord.out.tin.xls {output.out_tin} && \
+          mv {wildcards.sample}.Aligned.sortedByCoord.out.summary.txt {output.out_summary} && \
+          mv {wildcards.sample}.Aligned.sortedByCoord.out.tin.xls {output.out_tin}
         """
