@@ -161,7 +161,8 @@ rule multiqc_report:
 
 rule read_distribution:
     input:
-        f"{STAR_OUT}/{{sample}}.Aligned.sortedByCoord.out.bam"
+        bam = f"{STAR_OUT}/{{sample}}.Aligned.sortedByCoord.out.bam",
+        bai = f"{STAR_OUT}/{{sample}}.Aligned.sortedByCoord.out.bam.bai"
     output:
         report = f"{RSEQC_OUT}/{{sample}}.read_distribution.txt"
     log:
@@ -171,13 +172,14 @@ rule read_distribution:
     conda:
         "rseqc"
     shell:
-        """read_distribution.py -i {input} -r {params.gene_model} > {output}"""
+        """read_distribution.py -i {input.bam} -r {params.gene_model} > {output}"""
 
 
 # tin.py writes to working dir 
 rule tin:
     input:
-        f"{STAR_OUT}/{{sample}}.Aligned.sortedByCoord.out.bam"
+        bam = f"{STAR_OUT}/{{sample}}.Aligned.sortedByCoord.out.bam",
+        bai = f"{STAR_OUT}/{{sample}}.Aligned.sortedByCoord.out.bam.bai"
     output:
         out_tin = f"{RSEQC_OUT}/{{sample}}.Aligned.sortedByCoord.out.tin.xls",
         out_summary = f"{RSEQC_OUT}/{{sample}}.Aligned.sortedByCoord.out.summary.txt"
@@ -191,7 +193,7 @@ rule tin:
         "rseqc"
     shell:
         """
-        tin.py -i {input} \
+        tin.py -i {input.bam} \
           -r {params.gene_model} \
           -c {params.min_cov} \
           -n {params.sample_size} && \
