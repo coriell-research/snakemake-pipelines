@@ -12,6 +12,7 @@ STAR_OUT = f"{WORK_DIR}/02_star"
 SALMON_OUT = f"{WORK_DIR}/03_salmon"
 MULTIQC_OUT = f"{WORK_DIR}/04_multiqc"
 RSEQC_OUT = f"{WORK_DIR}/05_rseqc"
+MOSDEPTH_OUT = f"{WORK_DIR}/06_mosdepth"
 
 
 rule all:
@@ -23,7 +24,8 @@ rule all:
         f"{MULTIQC_OUT}/multiqc_report.html",
         expand(f"{RSEQC_OUT}/{{sample}}.read_distribution.txt", sample=SAMPLES_LIST),
         expand(f"{RSEQC_OUT}/{{sample}}.Aligned.sortedByCoord.out.tin.xls", sample=SAMPLES_LIST),
-        expand(f"{RSEQC_OUT}/{{sample}}.Aligned.sortedByCoord.out.summary.txt", sample=SAMPLES_LIST)
+        expand(f"{RSEQC_OUT}/{{sample}}.Aligned.sortedByCoord.out.summary.txt", sample=SAMPLES_LIST),
+        expand(f"{MOSDEPTH_OUT}/{{sample}}.per-base.bed.gz", sample=SAMPLES_LIST)
 
 
 rule fastp:
@@ -200,3 +202,30 @@ rule tin:
           mv {wildcards.sample}.Aligned.sortedByCoord.out.summary.txt {output.out_summary} && \
           mv {wildcards.sample}.Aligned.sortedByCoord.out.tin.xls {output.out_tin}
         """
+
+
+rule mosdepth:
+    input:
+        bam = f"{STAR_OUT}/{{sample}}.Aligned.sortedByCoord.out.bam",
+        bai = f"{STAR_OUT}/{{sample}}.Aligned.sortedByCoord.out.bam.bai"
+    output:
+        f"{MOSDEPTH_OUT}/{{sample}}.mosdepth.global.dist.txt",
+        f"{MOSDEPTH_OUT}/{{sample}}.mosdepth.summary.txt",
+        f"{MOSDEPTH_OUT}/{{sample}}.per-base.bed.gz"
+    params:
+        prefix = f"{MOSDEPTH_OUT}/{{sample}}",
+        include_flag = config["mosdepth"]["include_flag"],
+        exclude_flag = config["mosdepth"]["exclude_flag"]
+    log:
+        f"{MOSDEPTH_OUT}/{{sample}}.mosdepth.log"
+    threads:
+        12
+    shell:
+        """
+        mosdepth --threads {threads} \
+                 --fast-mode \
+                 --flag {params.exclude_flag} \
+                 --include-flag {params.include_flag} \
+                 {params.prefix} {input.bam}
+        """
+
