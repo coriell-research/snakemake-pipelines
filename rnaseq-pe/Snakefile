@@ -10,22 +10,13 @@ WORK_DIR = "../data"
 FASTP_OUT = f"{WORK_DIR}/01_fastp"
 STAR_OUT = f"{WORK_DIR}/02_star"
 SALMON_OUT = f"{WORK_DIR}/03_salmon"
-MULTIQC_OUT = f"{WORK_DIR}/04_multiqc"
-RSEQC_OUT = f"{WORK_DIR}/05_rseqc"
-MOSDEPTH_OUT = f"{WORK_DIR}/06_mosdepth"
+RSEQC_OUT = f"{WORK_DIR}/04_rseqc"
+MULTIQC_OUT = f"{WORK_DIR}/05_multiqc"
 
 
 rule all:
     input:
-        expand(f"{SALMON_OUT}/{{sample}}/quant.sf", sample=SAMPLES_LIST),
-        expand(f"{STAR_OUT}/{{sample}}.Aligned.sortedByCoord.out.bam.bai", sample=SAMPLES_LIST),
-        expand(f"{FASTP_OUT}/{{sample}}.fastp.html", sample=SAMPLES_LIST),
-        expand(f"{FASTP_OUT}/{{sample}}.fastp.json", sample=SAMPLES_LIST),
-        f"{MULTIQC_OUT}/multiqc_report.html",
-        expand(f"{RSEQC_OUT}/{{sample}}.read_distribution.txt", sample=SAMPLES_LIST),
-        expand(f"{RSEQC_OUT}/{{sample}}.Aligned.sortedByCoord.out.tin.xls", sample=SAMPLES_LIST),
-        expand(f"{RSEQC_OUT}/{{sample}}.Aligned.sortedByCoord.out.summary.txt", sample=SAMPLES_LIST),
-        expand(f"{MOSDEPTH_OUT}/{{sample}}.per-base.bed.gz", sample=SAMPLES_LIST)
+        f"{MULTIQC_OUT}/multiqc_report.html"
 
 
 rule fastp:
@@ -117,7 +108,6 @@ rule salmon_quant:
     input:
         r1 = f"{FASTP_OUT}/{{sample}}.trimmed.1.fq.gz",
         r2 = f"{FASTP_OUT}/{{sample}}.trimmed.2.fq.gz", 
-        star_bam = f"{STAR_OUT}/{{sample}}.Aligned.sortedByCoord.out.bam" 
     output:
         quant_sf = f"{SALMON_OUT}/{{sample}}/quant.sf",
         lib_format_counts = f"{SALMON_OUT}/{{sample}}/lib_format_counts.json"
@@ -140,25 +130,6 @@ rule salmon_quant:
           --numGibbsSamples {params.gibbs} \
           --output {params.output_dir} {params.extra} &> {log}
       """
-
-
-rule multiqc_report:
-    input:
-        expand(f"{FASTP_OUT}/{{sample}}.fastp.html", sample=SAMPLES_LIST),
-        expand(f"{FASTP_OUT}/{{sample}}.fastp.json", sample=SAMPLES_LIST),
-        expand(f"{STAR_OUT}/{{sample}}.Log.final.out", sample=SAMPLES_LIST),
-        expand(f"{SALMON_OUT}/{{sample}}/quant.sf", sample=SAMPLES_LIST),
-        expand(f"{SALMON_OUT}/{{sample}}/lib_format_counts.json", sample=SAMPLES_LIST)
-    output:
-        html_report = f"{MULTIQC_OUT}/multiqc_report.html",
-        data_dir = directory(f"{MULTIQC_OUT}/multiqc_data")
-    log:
-        f"{MULTIQC_OUT}/multiqc.log"
-    params:
-        search_dir = WORK_DIR,
-        output_dir = MULTIQC_OUT
-    shell:
-        "multiqc {params.search_dir} -o {params.output_dir} &> {log}"
 
 
 rule read_distribution:
@@ -204,28 +175,21 @@ rule tin:
         """
 
 
-rule mosdepth:
+rule multiqc_report:
     input:
-        bam = f"{STAR_OUT}/{{sample}}.Aligned.sortedByCoord.out.bam",
-        bai = f"{STAR_OUT}/{{sample}}.Aligned.sortedByCoord.out.bam.bai"
+        expand(f"{FASTP_OUT}/{{sample}}.fastp.html", sample=SAMPLES_LIST),
+        expand(f"{FASTP_OUT}/{{sample}}.fastp.json", sample=SAMPLES_LIST),
+        expand(f"{STAR_OUT}/{{sample}}.Log.final.out", sample=SAMPLES_LIST),
+        expand(f"{SALMON_OUT}/{{sample}}/quant.sf", sample=SAMPLES_LIST),
+        expand(f"{RSEQC_OUT}/{{sample}}.read_distribution.txt", sample=SAMPLES_LIST),
+        expand(f"{RSEQC_OUT}/{{sample}}.Aligned.sortedByCoord.out.tin.xls", sample=SAMPLES_LIST)
     output:
-        f"{MOSDEPTH_OUT}/{{sample}}.mosdepth.global.dist.txt",
-        f"{MOSDEPTH_OUT}/{{sample}}.mosdepth.summary.txt",
-        f"{MOSDEPTH_OUT}/{{sample}}.per-base.bed.gz"
-    params:
-        prefix = f"{MOSDEPTH_OUT}/{{sample}}",
-        include_flag = config["mosdepth"]["include_flag"],
-        exclude_flag = config["mosdepth"]["exclude_flag"]
+        html_report = f"{MULTIQC_OUT}/multiqc_report.html",
+        data_dir = directory(f"{MULTIQC_OUT}/multiqc_data")
     log:
-        f"{MOSDEPTH_OUT}/{{sample}}.mosdepth.log"
-    threads:
-        12
+        f"{MULTIQC_OUT}/multiqc.log"
+    params:
+        search_dir = WORK_DIR,
+        output_dir = MULTIQC_OUT
     shell:
-        """
-        mosdepth --threads {threads} \
-                 --fast-mode \
-                 --flag {params.exclude_flag} \
-                 --include-flag {params.include_flag} \
-                 {params.prefix} {input.bam}
-        """
-
+        "multiqc {params.search_dir} -o {params.output_dir} &> {log}"
