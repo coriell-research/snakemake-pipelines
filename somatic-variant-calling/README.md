@@ -34,10 +34,10 @@ the sequencing data. Valid values: ILLUMINA, SOLID, LS454, HELICOS and PACBIO.
 - **LB** : MarkDuplicates uses the LB field to determine which read groups might contain molecular 
 duplicates, in case the same DNA library was sequenced on multiple lanes.
 
-In addition to the read group flags above, two additional columns are needed specifying the 
+In addition to the read group flags above, additional columns are needed specifying the 
 absolute file paths to each sequencing run, named **read1** and **read2**, respectively, as well as
-for the patient/sampling unit ("sample_name") and whether or not the sample is from a tumor or 
-normal ("tumor_normal")
+for the patient/sampling unit (**sample_name**) and whether or not the sample is from a tumor or 
+normal (**tumor_normal**)
 
 A final formatted samples.csv file should have the following format:
 
@@ -45,6 +45,8 @@ sample_name | tumor_normal | read1 | read2 | ID | PU | SM | PL | LB
 ------------|--------------|-------|-------|----|----|----|----|----
 52171 | normal | DNA_WB_52171_CKDN250007070-1A_22JC23LT4_L3_1.fq.gz | DNA_WB_52171_CKDN250007070-1A_22JC23LT4_L3_2.fq.gz | 22JC23LT4.L3 | DNA_WB_52171_CKDN250007070-1A_22JC23LT4_L3 | 52171_normal | ILLUMINA | CKDN250007070-1A
 52171 | tunor | DNACCRL52171_CKDN250007064-1A_22JC23LT4_L3_1.fq.gz | DNACCRL52171_CKDN250007064-1A_22JC23LT4_L3_2.fq.gz | 22JC23LT4.L3 | DNACCRL52171_CKDN250007064-1A_22JC23LT4_L3 | 52171_tumor | ILLUMINA | CKDN250007064-1A
+
+NOTE: multiple sequencing runs are supported and may simply be listed as additional rows. See the example "samples.csv" file for a full, working example.
 
 ## Running the pipeline
 
