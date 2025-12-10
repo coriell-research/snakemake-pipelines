@@ -1,0 +1,21 @@
+fastp:
+  threads: 12
+  extra_params: "--detect_adapter_for_pe"
+
+bwa:
+  idx: "/mnt/data/gdata/gatk/hg38/v0/Homo_sapiens_assembly38.fasta"
+
+gatk:
+  ref: "/mnt/data/gdata/gatk/hg38/v0/Homo_sapiens_assembly38.fasta"
+  pon: "/mnt/data/gdata/gatk/hg38/v0/1000g_pon.hg38.vcf.gz"
+  glr: "/mnt/data/gdata/gatk/hg38/v0/af-only-gnomad.hg38.vcf.gz"
+  snps: "/mnt/data/gdata/gatk/hg38/v0/small_exac_common_3.hg38.vcf.gz"
+  data_source: "/mnt/data/gdata/gatk/hg38/funcotator_dataSources.v1.8.hg38.20230908s"
+
+mutect:
+  strategy: "FALSE_DISCOVERY_RATE"
+  fdr: 0.01
+  alt_reads: 3
+  read_pos: 10
+  base_qual: 30
+  min_allele: 0.05

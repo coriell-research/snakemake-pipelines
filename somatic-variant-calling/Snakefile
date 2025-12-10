@@ -1,0 +1,361 @@
+import pandas as pd
+
+
+configfile: "config.yaml"
+
+WORK_DIR = "../data"
+FASTP_OUT = f"{WORK_DIR}/01_fastp"
+BWA_OUT = f"{WORK_DIR}/02_bwa"
+MERGE_OUT = f"{WORK_DIR}/03_merge"
+MARKDUP_OUT = f"{WORK_DIR}/04_markdup"
+MUTECT_PAIRED_OUT = f"{WORK_DIR}/05a_mutect2_paired"
+MUTECT_SINGLE_OUT = f"{WORK_DIR}/05b_mutect2_single"
+PILEUP_OUT = f"{WORK_DIR}/06_pileup"
+CONTAM_PAIRED_OUT = f"{WORK_DIR}/07a_contam_paired"
+CONTAM_SINGLE_OUT = f"{WORK_DIR}/07b_contam_single"
+FILTER_PAIRED_OUT = f"{WORK_DIR}/08a_filter_paired"
+FILTER_SINGLE_OUT = f"{WORK_DIR}/08b_filter_single"
+PASS_PAIRED_OUT = f"{WORK_DIR}/09a_pass_paired"
+PASS_SINGLE_OUT = f"{WORK_DIR}/09b_pass_single"
+NORM_PAIRED_OUT = f"{WORK_DIR}/10a_norm_paired"
+NORM_SINGLE_OUT = f"{WORK_DIR}/10b_norm_single"
+ANNO_PAIRED_OUT = f"{WORK_DIR}/11a_annotate_paired"
+ANNO_SINGLE_OUT = f"{WORK_DIR}/11b_annotate_single"
+
+# Define samples and experimental units
+SAMPLES = pd.read_csv("samples.csv", sep=",", header=0)
+UNITS = SAMPLES["PU"].tolist()
+
+# Extract the PUs that need to be merged into single sample BAMs
+PU_BY_SAMPLE = SAMPLES.groupby('SM')['PU'].agg(list).to_dict()
+
+def get_replicates_for_merge(wildcards):
+    units = PU_BY_SAMPLE[wildcards.sample]
+    return [f"{BWA_OUT}/{u}.sorted.bam" for u in units]
+
+
+# Extract a disctionary of tumor-normal pairs and single samples
+PAIRED_SAMPLES = {}
+SINGLE_SAMPLES = {}
+for sample_name, group in SAMPLES.groupby("sample_name"):
+    sample_id = str(sample_name)
+    tumor_sms = group[group["tumor_normal"] == "tumor"]["SM"].unique()
+    normal_sms = group[group["tumor_normal"] == "normal"]["SM"].unique()
+    
+    if len(tumor_sms) > 0:
+        tumor_sm = tumor_sms[0]
+        if len(normal_sms) > 0:
+            normal_sm = normal_sms[0]
+            PAIRED_SAMPLES[sample_id] = {"tumor": tumor_sm, "normal": normal_sm}
+        else:
+            SINGLE_SAMPLES[sample_id] = {"tumor": tumor_sm}
+
+
+# Rules ----------------------------------------------------------------------
+
+
+rule all:
+    input:
+        expand(f"{ANNO_PAIRED_OUT}/{{sample}}.maf", sample=PAIRED_SAMPLES.keys()),
+        expand(f"{ANNO_SINGLE_OUT}/{{sample}}.maf", sample=SINGLE_SAMPLES.keys()),
+
+
+rule fastp:
+    input:
+        r1 = lambda w: SAMPLES.loc[SAMPLES["PU"] == w.pu, "read1"].item(),
+        r2 = lambda w: SAMPLES.loc[SAMPLES["PU"] == w.pu, "read2"].item()
+    output:
+        r1_out = temp(f"{FASTP_OUT}/{{pu}}.trimmed.1.fq.gz"),
+        r2_out = temp(f"{FASTP_OUT}/{{pu}}.trimmed.2.fq.gz"),
+        html = f"{FASTP_OUT}/{{pu}}.fastp.html",
+        json = f"{FASTP_OUT}/{{pu}}.fastp.json"
+    log:
+        f"{FASTP_OUT}/{{pu}}_fastp.log"
+    params:
+        extra = config["fastp"]["extra_params"]
+    shell:
+        "fastp -i {input.r1} -I {input.r2} -o {output.r1_out} -O {output.r2_out} "
+        "{params.extra} --html {output.html} --json {output.json} &> {log}"
+
+
+rule bwa:
+    input:
+        r1 = f"{FASTP_OUT}/{{pu}}.trimmed.1.fq.gz",
+        r2 = f"{FASTP_OUT}/{{pu}}.trimmed.2.fq.gz",
+    output:
+        bam = f"{BWA_OUT}/{{pu}}.sorted.bam",
+        bai = f"{BWA_OUT}/{{pu}}.sorted.bam.bai"
+    params:
+         pid = lambda w: SAMPLES.loc[SAMPLES["PU"] == w.pu, "ID"].item(),
+         sm = lambda w: SAMPLES.loc[SAMPLES["PU"] == w.pu, "SM"].item(),
+         pl = lambda w: SAMPLES.loc[SAMPLES["PU"] == w.pu, "PL"].item(),
+         lb = lambda w: SAMPLES.loc[SAMPLES["PU"] == w.pu, "LB"].item(),
+         pu = lambda w: SAMPLES.loc[SAMPLES["PU"] == w.pu, "PU"].item(),
+         idx = config["bwa"]["idx"],
+         gb = 4
+    threads:
+        8
+    log:
+        f"{BWA_OUT}/{{pu}}.log"
+    shell:
+        """
+        bwa mem -t {threads} -R '@RG\\tID:{params.pid}\\tSM:{params.sm}\\tPL:{params.pl}\\tLB:{params.lb}\\tPU:{params.pu}' {params.idx} {input.r1} {input.r2} | \
+        samtools sort -@{threads} -m{params.gb}g -o {output.bam} - && samtools index {output.bam}
+        """
+
+
+rule merge_bam:
+    input:
+        get_replicates_for_merge
+    output:
+        f"{MERGE_OUT}/{{sample}}.bam"
+    params:
+        lambda w, input: " ".join([f"-I {f}" for f in input])
+    shell:
+        "java -jar /usr/local/programs/picard.jar MergeSamFiles "
+          "{params} "
+          "--OUTPUT {output} "
+          "--ASSUME_SORTED true "
+          "--CREATE_INDEX true "
+          "--SORT_ORDER coordinate"
+
+
+rule mark_duplicates:
+    input:
+        f"{MERGE_OUT}/{{sample}}.bam"
+    output:
+        bam = f"{MARKDUP_OUT}/{{sample}}.bam",
+        metrics = f"{MARKDUP_OUT}/{{sample}}.metrics.txt"
+    shell:
+        "java -jar /usr/local/programs/picard.jar MarkDuplicates "
+          "-I {input} "
+          "-O {output.bam} "
+          "-M {output.metrics} "
+          "--ASSUME_SORT_ORDER coordinate "
+          "--CREATE_INDEX true "
+
+
+rule mutect2_paired:
+    input:
+        tumor = lambda w: f"{MARKDUP_OUT}/{PAIRED_SAMPLES[str(w.sample)]['tumor']}.bam",
+        normal = lambda w: f"{MARKDUP_OUT}/{PAIRED_SAMPLES[str(w.sample)]['normal']}.bam"
+    output:
+        vcf = f"{MUTECT_PAIRED_OUT}/{{sample}}.vcf.gz",
+        f1r2 = f"{MUTECT_PAIRED_OUT}/{{sample}}.f1r2.tar.gz"
+    params:
+        normal_name = lambda w: PAIRED_SAMPLES[str(w.sample)]['normal'],
+        ref = config["gatk"]["ref"],
+        glr = config["gatk"]["glr"],
+        pon = config["gatk"]["pon"]
+    shell:
+        "gatk Mutect2 "
+          "-I {input.tumor} "
+          "-I {input.normal} "
+          "-R {params.ref} "
+          "-normal {params.normal_name} "
+          "--germline-resource {params.glr} "
+          "--panel-of-normals {params.pon} "
+          "--create-output-variant-index true "
+          "--f1r2-tar-gz {output.f1r2} "
+          "-O {output.vcf}"
+
+
+rule mutect2_single:
+    input:
+        tumor = lambda w: f"{MARKDUP_OUT}/{SINGLE_SAMPLES[str(w.sample)]['tumor']}.bam"
+    output:
+        vcf = f"{MUTECT_SINGLE_OUT}/{{sample}}.vcf.gz",
+        f1r2 = f"{MUTECT_SINGLE_OUT}/{{sample}}.f1r2.tar.gz"
+    params:
+        ref = config["gatk"]["ref"],
+        glr = config["gatk"]["glr"],
+        pon = config["gatk"]["pon"]
+    shell:
+        "gatk Mutect2 "
+          "-I {input.tumor} "
+          "-R {params.ref} "
+          "--germline-resource {params.glr} "
+          "--panel-of-normals {params.pon} "
+          "--create-output-variant-index true "
+          "--f1r2-tar-gz {output.f1r2} "
+          "-O {output.vcf}"
+
+
+rule pileup_summary:
+    input:
+        f"{MARKDUP_OUT}/{{sample}}.bam"
+    output:
+        f"{PILEUP_OUT}/{{sample}}.table"
+    params:
+        common_snps = config["gatk"]["snps"]
+    shell:
+        "gatk GetPileupSummaries "
+          "-I {input} "
+          "-V {params.common_snps} "
+          "-L {params.common_snps} "
+          "-O {output}"
+
+
+rule contamination_paired:
+    input:
+        tumor = lambda w: f"{PILEUP_OUT}/{PAIRED_SAMPLES[str(w.sample)]['tumor']}.table",
+        normal = lambda w: f"{PILEUP_OUT}/{PAIRED_SAMPLES[str(w.sample)]['normal']}.table"
+    output:
+        f"{CONTAM_PAIRED_OUT}/{{sample}}.table"
+    shell:
+        "gatk CalculateContamination -I {input.tumor} -matched {input.normal} -O {output}"
+
+
+rule contamination_single:
+    input:
+        tumor = lambda w: f"{PILEUP_OUT}/{SINGLE_SAMPLES[str(w.sample)]['tumor']}.table"
+    output:
+        f"{CONTAM_SINGLE_OUT}/{{sample}}.table"
+    shell:
+        "gatk CalculateContamination -I {input.tumor} -O {output}"
+
+
+rule filter_mutect_paired:
+    input:
+        vcf = f"{MUTECT_PAIRED_OUT}/{{sample}}.vcf.gz",
+        bias = f"{MUTECT_PAIRED_OUT}/{{sample}}.f1r2.tar.gz",
+        contam = f"{CONTAM_PAIRED_OUT}/{{sample}}.table"
+    output:
+        f"{FILTER_PAIRED_OUT}/{{sample}}.vcf.gz"
+    params:
+        ref = config["gatk"]['ref'],
+        strategy = config["mutect"]['strategy'],
+        fdr = config["mutect"]['fdr'],
+        alt_reads = config["mutect"]['alt_reads'],
+        read_pos = config["mutect"]['read_pos'],
+        base_qual = config["mutect"]['base_qual'],
+        min_allele = config["mutect"]['min_allele']
+    shell:
+        "gatk FilterMutectCalls "
+          "-R {params.ref} "
+          "-V {input.vcf} "
+          "-O {output} "
+          "--threshold-strategy {params.strategy} " 
+          "--false-discovery-rate {params.fdr} "
+          "--unique-alt-read-count {params.alt_reads} " 
+          "--min-median-read-position {params.read_pos} " 
+          "--min-median-base-quality {params.base_qual} "
+          "--min-allele-fraction {params.min_allele} "
+          "--contamination-table {input.contam} "
+          "--orientation-bias-artifact-priors {input.bias}"
+ 
+
+rule filter_mutect_single:
+    input:
+        vcf = f"{MUTECT_SINGLE_OUT}/{{sample}}.vcf.gz",
+        bias = f"{MUTECT_SINGLE_OUT}/{{sample}}.f1r2.tar.gz",
+        contam = f"{CONTAM_SINGLE_OUT}/{{sample}}.table"
+    output:
+        f"{FILTER_SINGLE_OUT}/{{sample}}.vcf.gz"
+    params:
+        ref = config["gatk"]['ref'],
+        strategy = config["mutect"]['strategy'],
+        fdr = config["mutect"]['fdr'],
+        alt_reads = config["mutect"]['alt_reads'],
+        read_pos = config["mutect"]['read_pos'],
+        base_qual = config["mutect"]['base_qual'],
+        min_allele = config["mutect"]['min_allele']
+    shell:
+        "gatk FilterMutectCalls "
+          "-R {params.ref} "
+          "-V {input.vcf} "
+          "-O {output} "
+          "--threshold-strategy {params.strategy} " 
+          "--false-discovery-rate {params.fdr} "
+          "--unique-alt-read-count {params.alt_reads} " 
+          "--min-median-read-position {params.read_pos} " 
+          "--min-median-base-quality {params.base_qual} "
+          "--min-allele-fraction {params.min_allele} "
+          "--contamination-table {input.contam} "
+          "--orientation-bias-artifact-priors {input.bias}"
+
+
+rule get_pass_paired:
+    input:
+        f"{FILTER_PAIRED_OUT}/{{sample}}.vcf.gz"
+    output:
+        f"{PASS_PAIRED_OUT}/{{sample}}.vcf.gz"
+    params:
+        std_chrom = " ".join([f'chr{x}' for x in list(range(1, 23)) + ['X', 'Y']])
+    shell:
+        "bcftools view -r {params.std_chrom} -f PASS {input} -Oz -o {output} && bcftools index --tbi {output}"
+
+
+rule get_pass_single:
+    input:
+        f"{FILTER_SINGLE_OUT}/{{sample}}.vcf.gz"
+    output:
+        f"{PASS_SINGLE_OUT}/{{sample}}.vcf.gz"
+    params:
+        std_chrom = " ".join([f'chr{x}' for x in list(range(1, 23)) + ['X', 'Y']])
+    shell:
+        "bcftools view -r {params.std_chrom} -f PASS {input} -Oz -o {output} && bcftools index --tbi {output}"
+
+
+rule norm_pass_paired:
+    input:
+        f"{PASS_PAIRED_OUT}/{{sample}}.vcf.gz"
+    output:
+        f"{NORM_PAIRED_OUT}/{{sample}}.vcf.gz"
+    params:
+        ref = config["gatk"]["ref"],
+        multi = "-",
+        buff = 10000
+    shell:
+        "bcftools norm -m{params.multi} -w {params.buff} -f {params.ref} -O z -o {output} {input} && "
+        "bcftools index --tbi {output}"
+
+
+rule norm_pass_single:
+    input:
+        f"{PASS_SINGLE_OUT}/{{sample}}.vcf.gz"
+    output:
+        f"{NORM_SINGLE_OUT}/{{sample}}.vcf.gz"
+    params:
+        ref = config["gatk"]["ref"],
+        multi = "-",
+        buff = 10000
+    shell:
+        "bcftools norm -m{params.multi} -w {params.buff} -f {params.ref} -O z -o {output} {input} && "
+        "bcftools index --tbi {output}"
+
+
+rule annotate_paired:
+    input:
+        f"{NORM_PAIRED_OUT}/{{sample}}.vcf.gz"
+    output:
+        f"{ANNO_PAIRED_OUT}/{{sample}}.maf"
+    params:
+        ref = config["gatk"]["ref"],
+        data_source = config["gatk"]["data_source"]
+    shell:
+        "gatk Funcotator "
+          "--data-sources-path {params.data_source} "
+          "--output {output} "
+          "--output-file-format MAF "
+          "--ref-version hg38 "
+          "--reference {params.ref} "
+          "--variant {input}"
+
+
+rule annotate_single:
+    input:
+        f"{NORM_SINGLE_OUT}/{{sample}}.vcf.gz"
+    output:
+        f"{ANNO_SINGLE_OUT}/{{sample}}.maf"
+    params:
+        ref = config["gatk"]["ref"],
+        data_source = config["gatk"]["data_source"]
+    shell:
+        "gatk Funcotator "
+          "--data-sources-path {params.data_source} "
+          "--output {output} "
+          "--output-file-format MAF "
+          "--ref-version hg38 "
+          "--reference {params.ref} "
+          "--variant {input}"
