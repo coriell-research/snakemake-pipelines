@@ -10,7 +10,7 @@ To resize /dev/shm:
 `sudo mount -o remount,size=100G /dev/shm`
 
 Then copy the Kraken database into /dev/shm:
-`cp -r /mnt/data/gdata/kraken2/standard /dev/shm/standard`
+`cp -r /mnt/data/gdata/kraken2/standard /dev/shm`
 
 Then you can run the workflow:
 
