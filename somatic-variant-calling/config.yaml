@@ -11,6 +11,7 @@ gatk:
   glr: "/mnt/data/gdata/gatk/hg38/v0/af-only-gnomad.hg38.vcf.gz"
   snps: "/mnt/data/gdata/gatk/hg38/v0/small_exac_common_3.hg38.vcf.gz"
   data_source: "/mnt/data/gdata/gatk/hg38/funcotator_dataSources.v1.8.hg38.20230908s"
+  cosmic: "/mnt/data/gdata/gatk/hg38/Cosmic_GenomeScreensMutant_v103_GRCh38_ucsc.vcf.gz"
 
 mutect:
   strategy: "FALSE_DISCOVERY_RATE"
@@ -19,3 +20,7 @@ mutect:
   read_pos: 10
   base_qual: 30
   min_allele: 0.05
+  progress_seconds: 60
+
+java:
+  java_args: "-Xmx12G"

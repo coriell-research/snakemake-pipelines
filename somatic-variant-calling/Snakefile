@@ -8,9 +8,10 @@ FASTP_OUT = f"{WORK_DIR}/01_fastp"
 BWA_OUT = f"{WORK_DIR}/02_bwa"
 MERGE_OUT = f"{WORK_DIR}/03_merge"
 MARKDUP_OUT = f"{WORK_DIR}/04_markdup"
-MUTECT_PAIRED_OUT = f"{WORK_DIR}/05a_mutect2_paired"
-MUTECT_SINGLE_OUT = f"{WORK_DIR}/05b_mutect2_single"
-PILEUP_OUT = f"{WORK_DIR}/06_pileup"
+PILEUP_OUT = f"{WORK_DIR}/05_pileup"
+MPILEUP_OUT = f"{WORK_DIR}/06_mpileup"
+MUTECT_PAIRED_OUT = f"{WORK_DIR}/06a_mutect2_paired"
+MUTECT_SINGLE_OUT = f"{WORK_DIR}/06b_mutect2_single"
 CONTAM_PAIRED_OUT = f"{WORK_DIR}/07a_contam_paired"
 CONTAM_SINGLE_OUT = f"{WORK_DIR}/07b_contam_single"
 FILTER_PAIRED_OUT = f"{WORK_DIR}/08a_filter_paired"
@@ -110,9 +111,12 @@ rule merge_bam:
     output:
         f"{MERGE_OUT}/{{sample}}.bam"
     params:
-        lambda w, input: " ".join([f"-I {f}" for f in input])
+        bams = lambda w, input: " ".join([f"-I {f}" for f in input]),
+        java_args = config["java"]["java_args"]
+    log:
+        f"{MERGE_OUT}/{{sample}}.log"
     shell:
-        "java -jar /usr/local/programs/picard.jar MergeSamFiles "
+        "java {params.java_args} -jar /usr/local/programs/picard.jar MergeSamFiles "
           "{params} "
           "--OUTPUT {output} "
           "--ASSUME_SORTED true "
@@ -126,13 +130,53 @@ rule mark_duplicates:
     output:
         bam = f"{MARKDUP_OUT}/{{sample}}.bam",
         metrics = f"{MARKDUP_OUT}/{{sample}}.metrics.txt"
+    params:
+        java_args = config["java"]["java_args"]
+    log:
+        f"{MARKDUP_OUT}/{{sample}}.log",
     shell:
-        "java -jar /usr/local/programs/picard.jar MarkDuplicates "
+        "java {params.java_args} -jar /usr/local/programs/picard.jar MarkDuplicates "
           "-I {input} "
           "-O {output.bam} "
           "-M {output.metrics} "
           "--ASSUME_SORT_ORDER coordinate "
           "--CREATE_INDEX true "
+
+
+rule pileup_summary:
+    input:
+        f"{MARKDUP_OUT}/{{sample}}.bam"
+    output:
+        f"{PILEUP_OUT}/{{sample}}.table"
+    params:
+        common_snps = config["gatk"]["snps"],
+        ref = config["gatk"]["ref"],
+        sec = 60,
+        java_args = config["java"]["java_args"]
+    log:
+        f"{PILEUP_OUT}/{{sample}}.log"
+    shell:
+        "gatk --java-options {params.java_args} GetPileupSummaries "
+          "-I {input} "
+          "-R {params.ref} "
+          "-V {params.common_snps} "
+          "-L {params.common_snps} "
+          "--seconds-between-progress-updates {params.sec} "
+          "-O {output}"
+
+
+# Currently unused
+rule samtools_mpileup:
+    input:
+        f"{MARKDUP_OUT}/{{sample}}.bam"
+    output:
+        f"{MPILEUP_OUT}/{{sample}}.pileup"
+    params:
+        ref = config["bwa"]["idx"]
+    log:
+        f"{MPILEUP_OUT}/{{sample}}.log"
+    shell:
+        "samtools mpileup -q 1 -f {params.ref} {} > {output}"
 
 
 rule mutect2_paired:
@@ -146,18 +190,27 @@ rule mutect2_paired:
         normal_name = lambda w: PAIRED_SAMPLES[str(w.sample)]['normal'],
         ref = config["gatk"]["ref"],
         glr = config["gatk"]["glr"],
-        pon = config["gatk"]["pon"]
+        pon = config["gatk"]["pon"],
+        sec = config["mutect"]["progress_seconds"],
+        java_args = config["java"]["java_args"]
+    log:
+        f"{MUTECT_PAIRED_OUT}/{{sample}}.log"
+    threads:
+        4
     shell:
-        "gatk Mutect2 "
+        "gatk --java-options {params.java_args} Mutect2 "
           "-I {input.tumor} "
           "-I {input.normal} "
+          "-O {output.vcf} "
           "-R {params.ref} "
           "-normal {params.normal_name} "
           "--germline-resource {params.glr} "
           "--panel-of-normals {params.pon} "
-          "--create-output-variant-index true "
           "--f1r2-tar-gz {output.f1r2} "
-          "-O {output.vcf}"
+          "--seconds-between-progress-updates {params.sec} "
+          "--native-pair-hmm-threads {threads} "
+          "--create-output-variant-index true "
+          "--smith-waterman FASTEST_AVAILABLE"
 
 
 rule mutect2_single:
@@ -169,31 +222,25 @@ rule mutect2_single:
     params:
         ref = config["gatk"]["ref"],
         glr = config["gatk"]["glr"],
-        pon = config["gatk"]["pon"]
+        pon = config["gatk"]["pon"],
+        sec = config["mutect"]["progress_seconds"],
+        java_args = config["java"]["java_args"]
+    log:
+        f"{MUTECT_SINGLE_OUT}/{{sample}}.log"
+    threads:
+        4
     shell:
-        "gatk Mutect2 "
+        "gatk --java-options {params.java_args} Mutect2 "
           "-I {input.tumor} "
+          "-O {output.vcf} "
           "-R {params.ref} "
           "--germline-resource {params.glr} "
           "--panel-of-normals {params.pon} "
-          "--create-output-variant-index true "
           "--f1r2-tar-gz {output.f1r2} "
-          "-O {output.vcf}"
-
-
-rule pileup_summary:
-    input:
-        f"{MARKDUP_OUT}/{{sample}}.bam"
-    output:
-        f"{PILEUP_OUT}/{{sample}}.table"
-    params:
-        common_snps = config["gatk"]["snps"]
-    shell:
-        "gatk GetPileupSummaries "
-          "-I {input} "
-          "-V {params.common_snps} "
-          "-L {params.common_snps} "
-          "-O {output}"
+          "--seconds-between-progress-updates {params.sec} "
+          "--native-pair-hmm-threads {threads} "
+          "--create-output-variant-index true "
+          "--smith-waterman FASTEST_AVAILABLE"
 
 
 rule contamination_paired:
@@ -202,8 +249,12 @@ rule contamination_paired:
         normal = lambda w: f"{PILEUP_OUT}/{PAIRED_SAMPLES[str(w.sample)]['normal']}.table"
     output:
         f"{CONTAM_PAIRED_OUT}/{{sample}}.table"
+    params:
+        java_args = config["java"]["java_args"]
+    log:
+        f"{CONTAM_PAIRED_OUT}/{{sample}}.log"
     shell:
-        "gatk CalculateContamination -I {input.tumor} -matched {input.normal} -O {output}"
+        "gatk --java-options {params.java_args} CalculateContamination -I {input.tumor} -matched {input.normal} -O {output}"
 
 
 rule contamination_single:
@@ -211,8 +262,12 @@ rule contamination_single:
         tumor = lambda w: f"{PILEUP_OUT}/{SINGLE_SAMPLES[str(w.sample)]['tumor']}.table"
     output:
         f"{CONTAM_SINGLE_OUT}/{{sample}}.table"
+    params:
+        java_args = config["java"]["java_args"]
+    log:
+        f"{CONTAM_SINGLE_OUT}/{{sample}}.log"
     shell:
-        "gatk CalculateContamination -I {input.tumor} -O {output}"
+        "gatk --java-options {params.java_args} CalculateContamination -I {input.tumor} -O {output}"
 
 
 rule filter_mutect_paired:
@@ -229,9 +284,12 @@ rule filter_mutect_paired:
         alt_reads = config["mutect"]['alt_reads'],
         read_pos = config["mutect"]['read_pos'],
         base_qual = config["mutect"]['base_qual'],
-        min_allele = config["mutect"]['min_allele']
+        min_allele = config["mutect"]['min_allele'],
+        java_args = config["java"]["java_args"]
+    log:
+        f"{FILTER_PAIRED_OUT}/{{sample}}.log"
     shell:
-        "gatk FilterMutectCalls "
+        "gatk --java-options {params.java_args} FilterMutectCalls "
           "-R {params.ref} "
           "-V {input.vcf} "
           "-O {output} "
@@ -259,9 +317,12 @@ rule filter_mutect_single:
         alt_reads = config["mutect"]['alt_reads'],
         read_pos = config["mutect"]['read_pos'],
         base_qual = config["mutect"]['base_qual'],
-        min_allele = config["mutect"]['min_allele']
+        min_allele = config["mutect"]['min_allele'],
+        java_args = config["java"]["java_args"]
+    log:
+        f"{FILTER_SINGLE_OUT}/{{sample}}.log"
     shell:
-        "gatk FilterMutectCalls "
+        "gatk --java-options {params.java_args} FilterMutectCalls "
           "-R {params.ref} "
           "-V {input.vcf} "
           "-O {output} "
@@ -280,6 +341,8 @@ rule get_pass_paired:
         f"{FILTER_PAIRED_OUT}/{{sample}}.vcf.gz"
     output:
         f"{PASS_PAIRED_OUT}/{{sample}}.vcf.gz"
+    log:
+        f"{PASS_PAIRED_OUT}/{{sample}}.log"
     params:
         std_chrom = " ".join([f'chr{x}' for x in list(range(1, 23)) + ['X', 'Y']])
     shell:
@@ -291,6 +354,8 @@ rule get_pass_single:
         f"{FILTER_SINGLE_OUT}/{{sample}}.vcf.gz"
     output:
         f"{PASS_SINGLE_OUT}/{{sample}}.vcf.gz"
+    log:
+        f"{PASS_SINGLE_OUT}/{{sample}}.log"
     params:
         std_chrom = " ".join([f'chr{x}' for x in list(range(1, 23)) + ['X', 'Y']])
     shell:
@@ -302,6 +367,8 @@ rule norm_pass_paired:
         f"{PASS_PAIRED_OUT}/{{sample}}.vcf.gz"
     output:
         f"{NORM_PAIRED_OUT}/{{sample}}.vcf.gz"
+    log:
+        f"{NORM_PAIRED_OUT}/{{sample}}.log"
     params:
         ref = config["gatk"]["ref"],
         multi = "-",
@@ -316,6 +383,8 @@ rule norm_pass_single:
         f"{PASS_SINGLE_OUT}/{{sample}}.vcf.gz"
     output:
         f"{NORM_SINGLE_OUT}/{{sample}}.vcf.gz"
+    log:
+        f"{NORM_SINGLE_OUT}/{{sample}}.log"
     params:
         ref = config["gatk"]["ref"],
         multi = "-",
@@ -330,11 +399,14 @@ rule annotate_paired:
         f"{NORM_PAIRED_OUT}/{{sample}}.vcf.gz"
     output:
         f"{ANNO_PAIRED_OUT}/{{sample}}.maf"
+    log:
+        f"{ANNO_PAIRED_OUT}/{{sample}}.log"
     params:
         ref = config["gatk"]["ref"],
-        data_source = config["gatk"]["data_source"]
+        data_source = config["gatk"]["data_source"],
+        java_args = config["java"]["java_args"]
     shell:
-        "gatk Funcotator "
+        "gatk --java-options {params.java_args} Funcotator "
           "--data-sources-path {params.data_source} "
           "--output {output} "
           "--output-file-format MAF "
@@ -348,11 +420,14 @@ rule annotate_single:
         f"{NORM_SINGLE_OUT}/{{sample}}.vcf.gz"
     output:
         f"{ANNO_SINGLE_OUT}/{{sample}}.maf"
+    log:
+        f"{ANNO_SINGLE_OUT}/{{sample}}.log"
     params:
         ref = config["gatk"]["ref"],
-        data_source = config["gatk"]["data_source"]
+        data_source = config["gatk"]["data_source"],
+        java_args = config["java"]["java_args"]
     shell:
-        "gatk Funcotator "
+        "gatk --java-options {params.java_args} Funcotator "
           "--data-sources-path {params.data_source} "
           "--output {output} "
           "--output-file-format MAF "
