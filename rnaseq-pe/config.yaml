@@ -37,5 +37,7 @@ rseqc:
   sample_size: 100
 
 mosdepth:
+  window_size: 500 
   exclude_flag: 1796
   include_flag: 3
+  extra: "--fast-mode"

@@ -11,7 +11,8 @@ FASTP_OUT = f"{WORK_DIR}/01_fastp"
 STAR_OUT = f"{WORK_DIR}/02_star"
 SALMON_OUT = f"{WORK_DIR}/03_salmon"
 RSEQC_OUT = f"{WORK_DIR}/04_rseqc"
-MULTIQC_OUT = f"{WORK_DIR}/05_multiqc"
+MOSDEPTH_OUT = f"{WORK_DIR}/05_mosdepth"
+MULTIQC_OUT = f"{WORK_DIR}/06_multiqc"
 
 
 rule all:
@@ -91,17 +92,9 @@ rule star_align:
         --outSAMstrandField {params.strand_field} \
         --quantMode {params.quant_mode} \
         --outSAMtype {params.out_type} \
-        --outSAMattributes {params.sam_attributes} &> {log}
+        --outSAMattributes {params.sam_attributes} &> {log} &&
+        samtools index {output.bam}
        """
-
-
-rule index_bam:
-    input:
-        f"{STAR_OUT}/{{sample}}.Aligned.sortedByCoord.out.bam"
-    output:
-        f"{STAR_OUT}/{{sample}}.Aligned.sortedByCoord.out.bam.bai"
-    shell:
-        "samtools index {input}"
 
 
 rule salmon_quant:
@@ -175,6 +168,34 @@ rule tin:
         """
 
 
+rule mosdepth:
+    input:
+        bam = f"{STAR_OUT}/{{sample}}.Aligned.sortedByCoord.out.bam"
+    output:
+        dist = f"{MOSDEPTH_OUT}/{{sample}}.mosdepth.global.dist.txt",
+        summary = f"{MOSDEPTH_OUT}/{{sample}}.mosdepth.summary.txt",
+        per_base = f"{MOSDEPTH_OUT}/{{sample}}.per-base.bed.gz",
+        regions = f"{MOSDEPTH_OUT}/{{sample}}.regions.bed.gz"
+    params:
+        prefix = f"{MOSDEPTH_OUT}/{{sample}}",
+        window = config["mosdepth"]["window"],
+        include = config["mosdepth"]["include_flags"],
+        exclude = config["mosdepth"]["exclude_flags"],
+        extra = config["mosdepth"]["extra"]
+    threads:
+        4
+    shell:
+        """
+        mosdepth -t {threads} \
+          --by {params.window} \
+          --flag {params.exclude} \
+          --include_flag {params.include} \
+          {params.extra} \
+          {params.prefix} \
+          {input.bam}
+        """
+
+
 rule multiqc_report:
     input:
         expand(f"{FASTP_OUT}/{{sample}}.fastp.html", sample=SAMPLES_LIST),
@@ -182,7 +203,9 @@ rule multiqc_report:
         expand(f"{STAR_OUT}/{{sample}}.Log.final.out", sample=SAMPLES_LIST),
         expand(f"{SALMON_OUT}/{{sample}}/quant.sf", sample=SAMPLES_LIST),
         expand(f"{RSEQC_OUT}/{{sample}}.read_distribution.txt", sample=SAMPLES_LIST),
-        expand(f"{RSEQC_OUT}/{{sample}}.Aligned.sortedByCoord.out.tin.xls", sample=SAMPLES_LIST)
+        expand(f"{RSEQC_OUT}/{{sample}}.Aligned.sortedByCoord.out.tin.xls", sample=SAMPLES_LIST),
+        expand(f"{MOSDEPTH_OUT}/{{sample}}.mosdepth.summary.txt", sample=SAMPLES_LIST)
+
     output:
         html_report = f"{MULTIQC_OUT}/multiqc_report.html",
         data_dir = directory(f"{MULTIQC_OUT}/multiqc_data")
