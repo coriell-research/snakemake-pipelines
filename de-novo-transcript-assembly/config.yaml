@@ -1,0 +1,38 @@
+fastp:
+  threads: 12
+  extra_params: "--detect_adapter_for_pe"
+
+salmon:
+  threads: 12
+  lib_type: "A"
+  gibbs: 30
+  extra_params: "--gcBias --seqBias --posBias"
+  genome_fa: "/home/gennaro/data/references/GRCh38/GENCODE/v48/GRCh38.primary_assembly.genome.fa"
+  decoys: "/home/gennaro/data/references/GRCh38/GENCODE/v48/decoys.txt"
+
+star:
+  index_dir: "/home/gennaro/data/references/GRCh38/GENCODE/v48/STAR_idx" 
+  threads: 12
+  readFilesCommand: "zcat" 
+  twopassMode: "Basic" 
+  outFilterMultimapNmax: 100 
+  winAnchorMultimapNmax: 100
+  alignSJoverhangMin: 8 
+  alignSJDBoverhangMin: 1 
+  outFilterMismatchNmax: 999 
+  outFilterMismatchNoverLmax: 0.1 
+  alignIntronMin: 20 
+  alignIntronMax: 1000000 
+  alignMatesGapMax: 1000000 
+  outFilterScoreMinOverLread: 0.33 
+  outFilterMatchNminOverLread: 0.33 
+  limitSjdbInsertNsj: 1200000 
+  outSAMstrandField: "intronMotif" 
+  quantMode: "GeneCounts" 
+  outSAMtype: "BAM SortedByCoordinate"
+  outSAMattributes: "Standard"
+
+stringtie:
+  guide_gtf: "/home/gennaro/data/references/GRCh38/GENCODE/v48/gencode.v48.basic.annotation.gtf.gz"
+  lib_type: "--rf"
+

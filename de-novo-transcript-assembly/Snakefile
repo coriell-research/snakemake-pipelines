@@ -1,0 +1,193 @@
+import pandas as pd
+
+
+configfile: "config.yaml"
+
+SAMPLES = pd.read_csv("samples.csv", sep=",", header=0)
+SAMPLES_LIST = SAMPLES["sample_name"].tolist()
+
+WORK_DIR = "../data"
+FASTP_OUT = f"{WORK_DIR}/fastp"
+STAR_OUT = f"{WORK_DIR}/star"
+STRINGTIE_OUT = f"{WORK_DIR}/stringtie"
+SALMON_OUT = f"{WORK_DIR}/salmon"
+
+
+rule all:
+    input:
+        expand(f"{SALMON_OUT}/{{sample}}/quant.sf", sample=SAMPLES_LIST)
+
+
+rule fastp:
+    input:
+        r1 = lambda w: SAMPLES.loc[SAMPLES["sample_name"] == w.sample, "read1"].item(),
+        r2 = lambda w: SAMPLES.loc[SAMPLES["sample_name"] == w.sample, "read2"].item()
+    output:
+        r1_out = temp(f"{FASTP_OUT}/{{sample}}.trimmed.1.fq.gz"),
+        r2_out = temp(f"{FASTP_OUT}/{{sample}}.trimmed.2.fq.gz"),
+        html = f"{FASTP_OUT}/{{sample}}.fastp.html",
+        json = f"{FASTP_OUT}/{{sample}}.fastp.json"
+    log:
+        f"{FASTP_OUT}/{{sample}}_fastp.log"
+    params:
+        extra = config["fastp"]["extra_params"]
+    shell:
+        """
+        fastp -i {input.r1} \
+              -I {input.r2} \
+              -o {output.r1_out} \
+              -O {output.r2_out} \
+              {params.extra} \
+              --html {output.html} \
+              --json {output.json} &> {log}
+        """
+
+
+rule star_align:
+    input:
+        r1 = f"{FASTP_OUT}/{{sample}}.trimmed.1.fq.gz",
+        r2 = f"{FASTP_OUT}/{{sample}}.trimmed.2.fq.gz"
+    output:
+        bam = f"{STAR_OUT}/{{sample}}.Aligned.sortedByCoord.out.bam",
+        log_final = f"{STAR_OUT}/{{sample}}.Log.final.out"
+    log:
+        f"{STAR_OUT}/{{sample}}/star.log"
+    threads: config["star"]["threads"]
+    params:
+        star_index = config["star"]["index_dir"],
+        out_prefix = f"{STAR_OUT}/{{sample}}.",
+        read_cmd = config["star"]["readFilesCommand"],
+        two_pass = config["star"]["twopassMode"],
+        multi_mappers = config["star"]["outFilterMultimapNmax"],
+        multi_anchor = config["star"]["winAnchorMultimapNmax"],
+        sj_overhang_min = config["star"]["alignSJoverhangMin"],
+        sjdb_overhang_min = config["star"]["alignSJDBoverhangMin"],
+        mismatches = config["star"]["outFilterMismatchNmax"],
+        mismatch_ratio = config["star"]["outFilterMismatchNoverLmax"],
+        intron_min = config["star"]["alignIntronMin"],
+        intron_max = config["star"]["alignIntronMax"],
+        max_gap = config["star"]["alignMatesGapMax"],
+        min_score_ratio = config["star"]["outFilterScoreMinOverLread"],
+        min_match_ratio = config["star"]["outFilterMatchNminOverLread"],
+        n_junctions = config["star"]["limitSjdbInsertNsj"],
+        strand_field = config["star"]["outSAMstrandField"],
+        quant_mode = config["star"]["quantMode"],
+        out_type = config["star"]["outSAMtype"],
+        sam_attributes = config["star"]["outSAMattributes"]
+    shell:
+      """
+      STAR --genomeDir {params.star_index} \
+        --readFilesIn {input.r1} {input.r2} \
+        --outFileNamePrefix {params.out_prefix} \
+        --runThreadN {threads} \
+        --readFilesCommand {params.read_cmd} \
+        --twopassMode {params.two_pass} \
+        --outFilterMultimapNmax {params.multi_mappers} \
+        --winAnchorMultimapNmax {params.multi_anchor} \
+        --alignSJoverhangMin {params.sj_overhang_min} \
+        --alignSJDBoverhangMin {params.sjdb_overhang_min} \
+        --outFilterMismatchNmax {params.mismatches} \
+        --outFilterMismatchNoverLmax {params.mismatch_ratio} \
+        --alignIntronMin {params.intron_min} \
+        --alignIntronMax {params.intron_max} \
+        --alignMatesGapMax {params.max_gap} \
+        --outFilterScoreMinOverLread {params.min_score_ratio} \
+        --outFilterMatchNminOverLread {params.min_match_ratio} \
+        --limitSjdbInsertNsj {params.n_junctions} \
+        --outSAMstrandField {params.strand_field} \
+        --quantMode {params.quant_mode} \
+        --outSAMtype {params.out_type} \
+        --outSAMattributes {params.sam_attributes} &> {log} &&
+        samtools index {output.bam}
+       """
+
+
+rule stringtie_assemble:
+    input:
+        f"{STAR_OUT}/{{sample}}.Aligned.sortedByCoord.out.bam"
+    output:
+        f"{STRINGTIE_OUT}/{{sample}}.assembled.gtf"
+    params:
+        guide = config["stringtie"]["guide_gtf"],
+        lib_type = config["stringtie"]["lib_type"],
+    threads:
+        4
+    shell:
+        """
+        stringtie {input} -N --nasc -G {params.guide} {params.lib_type} -p {threads} -o {output}
+        """
+
+
+rule stringtie_merge:
+    input:
+        expand(f"{STRINGTIE_OUT}/{{sample}}.assembled.gtf", sample=SAMPLES_LIST)
+    output:
+        f"{STRINGTIE_OUT}/merged.gtf"
+    threads:
+        8
+    params:
+        guide = config["stringtie"]["guide_gtf"]
+    shell:
+        """
+        stringtie --merge -i -G {params.guide} {input} | grep -vE 'pEGFP-N1|ERCC' > {output}
+        """
+
+
+rule extract_tx:
+    input:
+        f"{STRINGTIE_OUT}/merged.gtf"
+    output:
+        f"{STRINGTIE_OUT}/transcripts.fa"
+    params:
+        ref = config["salmon"]["genome_fa"]
+    shell:
+        """
+        gffread -w {output} -g {params.ref} {input}
+        """
+
+
+rule salmon_idx:
+    input:
+         f"{STRINGTIE_OUT}/transcripts.fa"
+    output:
+        gentrome = f"{SALMON_OUT}/gentrome.fa",
+        idx = directory(f"{SALMON_OUT}/salmon_idx")
+    params:
+        ref_fa = config["salmon"]["genome_fa"],
+        decoys = config["salmon"]["decoys"]
+    threads:
+        12
+    shell:
+        """
+        cat {input} {params.ref_fa} > {output.gentrome} && \
+        salmon index -t {output.gentrome} -d {params.decoys} -p {threads} -i {output.idx}
+        """
+
+
+rule salmon_quant:
+    input:
+        r1 = f"{FASTP_OUT}/{{sample}}.trimmed.1.fq.gz",
+        r2 = f"{FASTP_OUT}/{{sample}}.trimmed.2.fq.gz",
+        gentrome = f"{SALMON_OUT}/gentrome.fa"
+    output:
+        quant_sf = f"{SALMON_OUT}/{{sample}}/quant.sf",
+    log:
+        f"{SALMON_OUT}/{{sample}}/salmon.log"
+    params:
+        salmon_index = f"{STRINGTIE_OUT}/salmon_idx",
+        extra = config["salmon"]["extra_params"],
+        threads = config["salmon"]["threads"],
+        lib_type = config["salmon"]["lib_type"],
+        gibbs = config["salmon"]["gibbs"],
+        output_dir = f"{SALMON_OUT}/{{sample}}"
+    shell:
+      """
+        salmon quant \
+          --index {params.salmon_index} \
+          --libType {params.lib_type} \
+          --mates1 {input.r1} \
+          --mates2 {input.r2} \
+          --threads {params.threads} \
+          --numGibbsSamples {params.gibbs} \
+          --output {params.output_dir} {params.extra} &> {log}
+      """
