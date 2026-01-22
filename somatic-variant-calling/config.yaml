@@ -23,4 +23,7 @@ mutect:
   progress_seconds: 60
 
 java:
-  java_args: "-Xmx12G"
+  java_args: "-Xmx64G"
+
+muse:
+  dbsnp: "/mnt/data/gdata/gatk/hg38/v0/Homo_sapiens_assembly38.dbsnp138.vcf.gz"

@@ -1,6 +1,10 @@
 ## WES Somatic Variant Calling Pipeline (Paired-end)
 
-The Snakemake pipeline follows GATK best practices for [Somatic Variant Calling](https://gatk.broadinstitute.org/hc/en-us/articles/360035894731-Somatic-short-variant-discovery-SNVs-Indels) with one exception, **BQSR step is skipped**.
+**This pipeline is currently a work in progress**. 
+
+The Snakemake pipeline follows GATK best practices for [Somatic Variant Calling](https://gatk.broadinstitute.org/hc/en-us/articles/360035894731-Somatic-short-variant-discovery-SNVs-Indels) with 
+one exception, **BQSR step is skipped**. After GATK pre-processing has been performed, somatic 
+variant calling is performed using MUsE2, VarScan2, and Mutect2 on tumor-normal pairs. 
 
 ## Set up
 
@@ -54,16 +58,3 @@ NOTE: multiple sequencing runs are supported and may simply be listed as additio
 above.
 2. Activate the `snakemake` environment: `mamba activate snakemake`
 3. Run using `snakemake --cores 8 --use-conda`
-
-## Output
-
-The final output is an MAF file produced by Funcotator for each of the samples present in the 
-samples.csv file.
-
-## TODO
-
-- Clean up / simplify rules
-- Add additional rules for variant calling with VarScan2 and MuSE
-- Add additional steps for mosdepth pileups
-- Add additional steps for CNV analysis
-
