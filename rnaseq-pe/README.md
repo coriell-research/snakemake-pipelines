@@ -1,9 +1,13 @@
 ## Paired-end RNA-seq snakemake pipeline
 
-This a simple snakemake pipeline for aligning and performing QC on paired-end 
-RNA-seq.
+This a simple snakemake pipeline for aligning and performing QC on paired-end RNA-seq.
 
-**This workflow does not account for samples from multiple lanes at the moment** 
+**This workflow does not account for samples from multiple lanes at the moment**. If you have 
+samples split across multiple lanes you can concatenate them prior to running this pipeline. The 
+pipeline also assumes that you are running it on Coriell's server, meaning dependencies are not 
+resolved by the workflow itself and paths to pre-generated genome indeces are available. As such,
+ensure `Salmon`, `STAR`, `fastp`, and `mosdepth` are installed and available on your path. Also, 
+it assumes a conda env named "rseqc" exists and has `RSeQC` installed. 
 
 ### Usage
 
@@ -24,5 +28,5 @@ changed by editing the Snakefile).
 1. `fastp` using paired-end adapter detection
 2. `STAR` 2-PASS alignment + GeneCounts
 3. `Salmon` quant with 100 Gibbs samples
-4. RseQC read_distribution.py and tin.py to assess RNA quality
+4. `RSeQC` read_distribution.py and tin.py to assess RNA quality
     
