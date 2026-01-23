@@ -1,0 +1,14 @@
+fastp:
+  extra_params: "--detect_adapter_for_pe"
+
+bowtie2:
+  idx: "/home/gennaro/data/references/GRCh38/GENCODE/v48/bt2_idx"
+  mex_insert: 2000
+  flags: "--very-sensitive --no-mixed --no-discordant"
+
+genrich:
+    blacklist: "/home/gennaro/data/references/GRCh38/GENCODE/v48/excluderanges.bed"
+    flags: "-j -r -e chrM -S"
+
+bedgraph2bigwig:
+    chrom_sizes: "/home/gennaro/data/references/GRCh38/GENCODE/v48/GRCh38.primary_assembly.genome.fa.chrom_sizes"

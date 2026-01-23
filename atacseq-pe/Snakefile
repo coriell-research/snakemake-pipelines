@@ -1,0 +1,159 @@
+import pandas as pd
+
+
+configfile: "config.yaml"
+
+SAMPLES = pd.read_csv("samples.csv", sep=",", header=0)
+SAMPLES_LIST = SAMPLES["sample_name"].tolist()
+
+WORK_DIR = "../data"
+FASTP_OUT = f"{WORK_DIR}/fastp"
+BOWTIE2_OUT = f"{WORK_DIR}/bowtie2"
+GENRICH_OUT = f"{WORK_DIR}/genrich"
+BIGWIG_OUT = f"{WORK_DIR}/bg2bw"
+MULTIQC_OUT = f"{WORK_DIR}/multiqc"
+
+
+rule all:
+    input:
+        f"{MULTIQC_OUT}/multiqc_report.html"
+
+# Trim adapters and low quality reads
+rule fastp:
+    input:
+        r1 = lambda w: SAMPLES.loc[SAMPLES["sample_name"] == w.sample, "read1"].item(),
+        r2 = lambda w: SAMPLES.loc[SAMPLES["sample_name"] == w.sample, "read2"].item()
+    output:
+        r1_out = temp(f"{FASTP_OUT}/{{sample}}.trimmed.1.fq.gz"),
+        r2_out = temp(f"{FASTP_OUT}/{{sample}}.trimmed.2.fq.gz"),
+        html = f"{FASTP_OUT}/{{sample}}.fastp.html",
+        json = f"{FASTP_OUT}/{{sample}}.fastp.json"
+    log:
+        f"{FASTP_OUT}/{{sample}}_fastp.log"
+    params:
+        extra = config["fastp"]["extra_params"]
+    threads:
+      8
+    shell:
+        """
+        fastp -i {input.r1} \
+              -I {input.r2} \
+              -o {output.r1_out} \
+              -O {output.r2_out} \
+              --thread {threads} \
+              {params.extra} \
+              --html {output.html} \
+              --json {output.json} &> {log}
+        """
+
+# Align and process BAMs in stream
+rule bowtie2:
+    input:
+        r1 = f"{FASTP_OUT}/{{sample}}.trimmed.1.fq.gz",
+        r2 = f"{FASTP_OUT}/{{sample}}.trimmed.2.fq.gz"
+    output:
+        bam = f"{BOWTIE2_OUT}/{{sample}}.sorted.bam",
+        stats = f"{BOWTIE2_OUT}/{{sample}}.stats.txt"
+    log:
+        f"{BOWTIE2_OUT}/{{sample}}.log"
+    threads:
+        16
+    params:
+        idx = config["bowtie2"]["idx"],
+        max_insert = config["bowtie2"]["max_insert"],
+        flags = config["bowtie2"]["flags"],
+        sort_mem = "4G"
+        comp_threads = 4
+    shell:
+        """
+        # 1. Align with bowtie2
+        # 2. Collate reads from multi-threading output
+        # 3. Apply fixmate tags
+        # 4. Position sort (needed for markdup)
+        # 5. Mark duplicates with markdup 
+
+        bowtie2 -x {params.idx} \
+            -1 {input.r1} \
+            -2 {input.r2} \
+            {params.flags} \
+            --threads {threads} \
+            --maxins {params.max_insert} 2> {log} | \
+        samtools collate -u -O bam -@ {params.comp_threads} - | \
+        samtools fixmate -m -u -@ {params.comp_threads} - - | \
+        samtools sort -u -@ {params.comp_threads} -m {params.sort_mem} - | \
+        samtools markdup --write-index -s {output.stats} -@ {threads} - {output.bam} 
+        """
+
+# Queryname sort reuired for Genrich
+rule collate_bam:
+    input:
+        position_sorted = f"{BOWTIE2_OUT}/{{sample}}.sorted.bam"
+    output:
+        name_sorted = temp(f"{GENRICH_OUT}/{{sample}}.bam")
+    threads:
+        4
+    shell:
+        "samtools collate -@ {threads} -o {output.name_sorted} {input.position_sorted}"
+
+# Peak calling in ATAC-mode (see flags in config)
+rule genrich:
+    input:
+        bam = f"{GENRICH_OUT}/{{sample}}.bam"
+    output:
+        peaks = f"{GENRICH_OUT}/{{sample}}.narrowPeak",
+        pileup = f"{GENRICH_OUT}/{{sample}}.pileup.txt",
+        log = f"{GENRICH_OUT}/{{sample}}.log"
+    params:
+         blacklist = config["genrich"]["blacklist"],
+         flags = config["genrich"]["flags"]
+    shell:
+        """
+        Genrich 
+          -t $OUT/{}.sorted.bam \
+          -o {output.peaks} \
+          -k {output.pileup} \
+          -f {output.log} \
+          -E {params.blacklist} \
+          {params.flags}
+        """
+
+# Genrich outputs bedgraph-ish style pileup, ensure bedGraph format and sort order
+rule pileup2bedgraph:
+    input:
+        pileup = f"{GENRICH_OUT}/{{sample}}.pileup.txt"
+    output:
+        bedgraph = temp(f"{BIGWIG_OUT}/{{sample}}.bedGraph")
+    shell:
+        """
+        awk 'NR > 2 { print \$1, \$2, \$3, \$4 }' {input.pileup} | \
+        LC_ALL=C sort -k1,1 -k2,2n > {output.bedgraph}
+        """
+
+# Convert the extracted data of the raw signal to bigwig files
+rule bg2bw:
+    input:
+        bedgraph = f"{BIGWIG_OUT}/{{sample}}.bedGraph"
+    output:
+        bw = f"{BIGWIG_OUT}/{{sample}}.bw"
+    params:
+        chrom_sizes = config["bedgraph2bigwig"]["chrom_sizes"]
+    shell:
+        "bedGraphToBigWig {input.bedgraph} {params.chrom_sizes} {output.bw}"
+
+
+rule multiqc:
+    input:
+        expand(f"{FASTP_OUT}/{{sample}}.fastp.html", sample=SAMPLES_LIST),
+        expand(f"{FASTP_OUT}/{{sample}}.fastp.json", sample=SAMPLES_LIST),
+        expand(f"{GENRICH_OUT}/{{sample}}.narrowPeak", sample=SAMPLES_LIST),
+        expand(f"{BIGWIG_OUT}/{{sample}}.bw", sample=SAMPLES_LIST)
+    output:
+        html_report = f"{MULTIQC_OUT}/multiqc_report.html",
+        data_dir = directory(f"{MULTIQC_OUT}/multiqc_data")
+    log:
+        f"{MULTIQC_OUT}/multiqc.log"
+    params:
+        search_dir = WORK_DIR,
+        output_dir = MULTIQC_OUT
+    shell:
+        "multiqc {params.search_dir} -o {params.output_dir} &> {log}"
