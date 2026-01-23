@@ -45,7 +45,7 @@ for sample_name, group in SAMPLES.groupby("sample_name"):
 
 rule all:
     input:
-        expand(f"{VARSCAN_PAIRED_OUT}/{{sample}}.snp.Somatic.hc.vcf", sample=PAIRED_SAMPLES.keys()),
+        expand(f"{VARSCAN_PAIRED_OUT}/{{sample}}.snp.Somatic.hc.fpfilter.vcf", sample=PAIRED_SAMPLES.keys()),
         expand(f"{MUSE_PAIRED_OUT}/{{sample}}.vcf", sample=PAIRED_SAMPLES.keys())
 
 
@@ -131,34 +131,53 @@ rule mark_duplicates:
           "--CREATE_INDEX true "
 
 
-rule varscan_paired:
+rule mpileup_paired:
     input:
         tumor = lambda w: f"{MARKDUP_OUT}/{PAIRED_SAMPLES[str(w.sample)]['tumor']}.bam",
         normal = lambda w: f"{MARKDUP_OUT}/{PAIRED_SAMPLES[str(w.sample)]['normal']}.bam"
+    output:
+        pileup = f"{VARSCAN_PAIRED_OUT}/{{sample}}.pileup"
+    params:
+        ref = config["bwa"]["idx"],
+        max_depth = 10000,
+        min_mapq = 20,
+        min_baq = 30
+    shell:
+        """
+        samtools mpileup \
+            -d {params.max_depth} \
+            -q {params.min_mapq} \
+            -Q {params.min_baq} \
+            -f {params.ref} \
+            -o {output.pileup} \
+            {input.normal} {input.tumor}
+        """
+
+
+rule varscan_paired:
+    input:
+        pileup = f"{VARSCAN_PAIRED_OUT}/{{sample}}.pileup"
     output:
         snp_vcf = f"{VARSCAN_PAIRED_OUT}/{{sample}}.snp.vcf",
         indel_vcf = f"{VARSCAN_PAIRED_OUT}/{{sample}}.indel.vcf"
     log:
         f"{VARSCAN_PAIRED_OUT}/{{sample}}.somatic.log"
     params:
-        ref = config["bwa"]["idx"],
-        out_prefix = f"{VARSCAN_PAIRED_OUT}/{{sample}}"
+        out_prefix = f"{VARSCAN_PAIRED_OUT}/{{sample}}",
+        min_cov = 10,
+        min_var_freq = 0.05,
+        somatic_p = 0.005,
+        strand_filter = 1
     shell:
         """
-        samtools mpileup \
-            -d 10000 \
-            -q 1 \
-            -Q 30 \
-            -f {params.ref} \
-            {input.normal} {input.tumor} | \
         java -jar /usr/local/programs/VarScan.jar somatic \
-            - \
+            {input.pileup} \
             {params.out_prefix} \
-            --mpileup 1 \
             --output-vcf 1 \
-            --min-coverage 10 \
-            --min-var-freq 0.05 \
-            --somatic-p-value 0.05 \
+            --min-coverage {params.min_cov} \
+            --min-var-freq {params.min_var_freq} \
+            --somatic-p-value {params.somatic_p} \
+            --strand-filter {params.strand_filter} \
             --output-snp {output.snp_vcf} \
             --output-indel {output.indel_vcf} \
             2> {log}
@@ -178,7 +197,7 @@ rule varscan_filter_paired:
         min_reads = 4,
         min_strands = 1,
         min_var_freq = 0.05,
-        p_value = 0.05
+        p_value = 0.005
     shell:
         """
         java -jar /usr/local/programs/VarScan.jar somaticFilter \
@@ -194,6 +213,50 @@ rule varscan_filter_paired:
         """
 
 
+rule varscan_readcounts:
+    input:
+        pileup = f"{VARSCAN_PAIRED_OUT}/{{sample}}.pileup",
+        vcf = f"{VARSCAN_PAIRED_OUT}/{{sample}}.snp.Somatic.hc.vcf"
+    output:
+        readcounts = f"{VARSCAN_PAIRED_OUT}/{{sample}}.readcounts"
+    params:
+        min_cov = 10,
+        min_qual = 15
+    shell:
+        """
+        java -jar /usr/local/programs/VarScan.jar readcounts {input.pileup} \
+          --variants-file {input.vcf} \
+          --ouput-file {output.readcounts} \
+          --min-coverage {params.min_cov} \
+          --min-base-qual {params.min_qual}
+        """
+
+
+rule varscan_fpfilter_paired:
+    input:
+        readcounts = f"{VARSCAN_PAIRED_OUT}/{{sample}}.readcounts",
+        vcf = f"{VARSCAN_PAIRED_OUT}/{{sample}}.snp.Somatic.hc.vcf"
+    output:
+        vcf = f"{VARSCAN_PAIRED_OUT}/{{sample}}.snp.Somatic.hc.fpfilter.vcf"
+    params:
+        min_var_count = 3,
+        min_var_freq  = 0.05,
+        min_read_pos  = 0.10,
+        min_strandedness = 0
+    shell:
+        """
+        java -jar /usr/local/programs/VarScan.jar fpfilter \
+            {input.vcf} \
+            {input.readcounts} \
+            --output-file {output.vcf} \
+            --min-var-count {params.min_var_count} \
+            --min-var-freq {params.min_var_freq} \
+            --min-read-pos {params.min_read_pos} \
+            --min-strandedness {params.min_strandedness} \
+            2> {log}
+        """
+
+
 rule muse_call_paired:
     input:
         tumor = lambda w: f"{MARKDUP_OUT}/{PAIRED_SAMPLES[str(w.sample)]['tumor']}.bam",
@@ -205,7 +268,8 @@ rule muse_call_paired:
     params:
         ref = config["bwa"]["idx"],
         out_prefix = f"{MUSE_PAIRED_OUT}/{{sample}}"
-    threads: 4
+    threads: 
+        8
     conda:
         "muse"
     shell:
@@ -230,7 +294,7 @@ rule muse_sump_paired:
         dbsnp = config["muse"]["dbsnp"],
         mode = "-E"
     threads:
-        4
+        8
     conda:
         "muse"
     shell:
