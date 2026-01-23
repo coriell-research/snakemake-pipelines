@@ -10,6 +10,9 @@ MERGE_OUT = f"{WORK_DIR}/merge"
 MARKDUP_OUT = f"{WORK_DIR}/markdup"
 VARSCAN_PAIRED_OUT = f"{WORK_DIR}/varscan_paired"
 MUSE_PAIRED_OUT = f"{WORK_DIR}/muse_paired"
+PILEUP_SUMMARY_OUT = f"{WORK_DIR}/pileup_summary"
+MUTECT_PAIRED_OUT = f"{WORK_DIR}/mutect_paired"
+CONTAM_PAIRED_OUT = f"{WORK_DIR}/contam_paired"
 
 # Define samples and experimental units
 SAMPLES = pd.read_csv("samples.csv", sep=",", header=0)
@@ -45,6 +48,7 @@ for sample_name, group in SAMPLES.groupby("sample_name"):
 
 rule all:
     input:
+        expand(f"{MUTECT_PAIRED_OUT}/{{sample}}.vcf.filtered.gz", sample=PAIRED_SAMPLES.keys()),
         expand(f"{VARSCAN_PAIRED_OUT}/{{sample}}.snp.Somatic.hc.fpfilter.vcf", sample=PAIRED_SAMPLES.keys()),
         expand(f"{MUSE_PAIRED_OUT}/{{sample}}.vcf", sample=PAIRED_SAMPLES.keys())
 
@@ -102,14 +106,14 @@ rule merge_bam:
         bams = lambda w, input: " ".join([f"-I {f}" for f in input]),
         java_args = config["java"]["java_args"]
     log:
-        f"{MERGE_OUT}/{{sample}}.log"
+        f"{MERGE_OUT}/{{sample}}.merge.log"
     shell:
         "java {params.java_args} -jar /usr/local/programs/picard.jar MergeSamFiles "
           "{params} "
           "--OUTPUT {output} "
           "--ASSUME_SORTED true "
           "--CREATE_INDEX true "
-          "--SORT_ORDER coordinate"
+          "--SORT_ORDER coordinate &> {log}"
 
 
 rule mark_duplicates:
@@ -121,14 +125,14 @@ rule mark_duplicates:
     params:
         java_args = config["java"]["java_args"]
     log:
-        f"{MARKDUP_OUT}/{{sample}}.log",
+        f"{MARKDUP_OUT}/{{sample}}.markduplicates.log",
     shell:
         "java {params.java_args} -jar /usr/local/programs/picard.jar MarkDuplicates "
           "-I {input} "
           "-O {output.bam} "
           "-M {output.metrics} "
           "--ASSUME_SORT_ORDER coordinate "
-          "--CREATE_INDEX true "
+          "--CREATE_INDEX true &> {log}"
 
 
 rule mpileup_paired:
@@ -180,7 +184,7 @@ rule varscan_paired:
             --strand-filter {params.strand_filter} \
             --output-snp {output.snp_vcf} \
             --output-indel {output.indel_vcf} \
-            2> {log}
+            &> {log}
         """
 
 
@@ -191,7 +195,7 @@ rule varscan_filter_paired:
     output:
         vcf_filtered = f"{VARSCAN_PAIRED_OUT}/{{sample}}.snp.Somatic.hc.vcf"
     log:
-        f"{VARSCAN_PAIRED_OUT}/{{sample}}.filter.log"
+        f"{VARSCAN_PAIRED_OUT}/{{sample}}.somaticFilter.log"
     params:
         min_cov = 10,
         min_reads = 4,
@@ -209,7 +213,7 @@ rule varscan_filter_paired:
             --p-value {params.p_value} \
             --indel-file {input.indel_vcf} \
             --output-file {output.vcf_filtered} \
-            2> {log}
+            2&> {log}
         """
 
 
@@ -222,13 +226,15 @@ rule varscan_readcounts:
     params:
         min_cov = 10,
         min_qual = 15
+    log:
+        f"{VARSCAN_PAIRED_OUT}/{{sample}}.readcounts.log"
     shell:
         """
         java -jar /usr/local/programs/VarScan.jar readcounts {input.pileup} \
           --variants-file {input.vcf} \
           --ouput-file {output.readcounts} \
           --min-coverage {params.min_cov} \
-          --min-base-qual {params.min_qual}
+          --min-base-qual {params.min_qual} &> {log}
         """
 
 
@@ -238,6 +244,8 @@ rule varscan_fpfilter_paired:
         vcf = f"{VARSCAN_PAIRED_OUT}/{{sample}}.snp.Somatic.hc.vcf"
     output:
         vcf = f"{VARSCAN_PAIRED_OUT}/{{sample}}.snp.Somatic.hc.fpfilter.vcf"
+    log:
+        f"{VARSCAN_PAIRED_OUT}/{{sample}}.fpfilter.log"
     params:
         min_var_count = 3,
         min_var_freq  = 0.05,
@@ -253,7 +261,7 @@ rule varscan_fpfilter_paired:
             --min-var-freq {params.min_var_freq} \
             --min-read-pos {params.min_read_pos} \
             --min-strandedness {params.min_strandedness} \
-            2> {log}
+            &> {log}
         """
 
 
@@ -279,7 +287,7 @@ rule muse_call_paired:
             -f {params.ref} \
             -n {threads} \
             {input.tumor} {input.normal} \
-            2> {log}
+            &> {log}
         """
 
 
@@ -305,5 +313,119 @@ rule muse_sump_paired:
             -n {threads} \
             -O {output.vcf} \
             -D {params.dbsnp} \
-            2> {log}
+            &> {log}
         """
+
+
+rule mutect2_paired:
+    input:
+        tumor = lambda w: f"{MARKDUP_OUT}/{PAIRED_SAMPLES[str(w.sample)]['tumor']}.bam",
+        normal = lambda w: f"{MARKDUP_OUT}/{PAIRED_SAMPLES[str(w.sample)]['normal']}.bam"
+    output:
+        vcf = f"{MUTECT_PAIRED_OUT}/{{sample}}.vcf.gz",
+        f1r2 = f"{MUTECT_PAIRED_OUT}/{{sample}}.f1r2.tar.gz"
+    params:
+        normal_name = lambda w: PAIRED_SAMPLES[str(w.sample)]['normal'],
+        ref = config["gatk"]["ref"],
+        glr = config["gatk"]["glr"],
+        pon = config["gatk"]["pon"]
+        sec = config["mutect"]["progress_seconds"],
+        java_args = config["java"]["java_args"],
+        tmp_dir = MUTECT_PAIRED_OUT
+    log:
+        f"{MUTECT_PAIRED_OUT}/{{sample}}.log"
+    threads:
+        4
+    shell:
+        "gatk --java-options {params.java_args} Mutect2 "
+          "-I {input.tumor} "
+          "-I {input.normal} "
+          "-O {output.vcf} "
+          "-R {params.ref} "
+          "--tmp-dir {params.tmp_dir} "
+          "--normal {params.normal_name} "
+          "--germline-resource {params.glr} "
+          "--panel-of-normals {params.pon} "
+          "--create-output-variant-index true "
+          "--f1r2-tar-gz {output.f1r2} "
+          "--seconds-between-progress-updates {params.sec} "
+          "--native-pair-hmm-threads {threads} "
+          "--create-output-variant-index true  &> {log} "
+
+
+rule pileup_summary:
+    input:
+        f"{MARKDUP_OUT}/{{sample}}.bam"
+    output:
+        f"{PILEUP_SUMMARY_OUT}/{{sample}}.table"
+    params:
+        common_snps = config["gatk"]["snps"],
+        ref = config["gatk"]["ref"],
+        sec = 120,
+        java_args = config["java"]["java_args"],
+        tmp_dir = PILEUP_SUMMARY_OUT
+    log:
+        f"{PILEUP_SUMMARY_OUT}/{{sample}}.pileupsummary.log"
+    shell:
+        "gatk --java-options {params.java_args} GetPileupSummaries "
+          "-I {input} "
+          "-R {params.ref} "
+          "-V {params.common_snps} "
+          "-L {params.common_snps} "
+          "--tmp-dir {params.tmp_dir} "
+          "--seconds-between-progress-updates {params.sec} &> {log}"
+
+
+rule contamination_paired:
+    input:
+        tumor = lambda w: f"{PILEUP_OUT}/{PAIRED_SAMPLES[str(w.sample)]['tumor']}.table",
+        normal = lambda w: f"{PILEUP_OUT}/{PAIRED_SAMPLES[str(w.sample)]['normal']}.table"
+    output:
+        f"{CONTAM_PAIRED_OUT}/{{sample}}.table"
+    params:
+        java_args = config["java"]["java_args"],
+        tmp_dir = CONTAM_PAIRED_OUT
+    log:
+        f"{CONTAM_PAIRED_OUT}/{{sample}}.log"
+    shell:
+        """
+        gatk --java-options {params.java_args} CalculateContamination \
+          --input {input.tumor} \
+          --matched-normal {input.normal} \
+          --output {output} \
+          --tmp-dir {params.tmp_dir} &> {log}
+        """
+
+
+rule filter_mutect_paired:
+    input:
+        vcf = f"{MUTECT_PAIRED_OUT}/{{sample}}.vcf.gz",
+        bias = f"{MUTECT_PAIRED_OUT}/{{sample}}.f1r2.tar.gz",
+        contam = f"{CONTAM_PAIRED_OUT}/{{sample}}.table"
+    output:
+        vcf = f"{MUTECT_PAIRED_OUT}/{{sample}}.vcf.filtered.gz"
+    params:
+        ref = config["gatk"]['ref'],
+        strategy = config["mutect"]['strategy'],
+        fdr = config["mutect"]['fdr'],
+        alt_reads = config["mutect"]['alt_reads'],
+        read_pos = config["mutect"]['read_pos'],
+        base_qual = config["mutect"]['base_qual'],
+        min_allele = config["mutect"]['min_allele'],
+        tmp_dir = MUTECT_PAIRED_OUT,
+        java_args = config["java"]["java_args"]
+    log:
+        f"{MUTECT_PAIRED_OUT}/{{sample}}.log"
+    shell:
+        "gatk --java-options {params.java_args} FilterMutectCalls "
+          "-R {params.ref} "
+          "-V {input.vcf} "
+          "-O {output.vcf} "
+          "--threshold-strategy {params.strategy} " 
+          "--false-discovery-rate {params.fdr} "
+          "--unique-alt-read-count {params.alt_reads} " 
+          "--min-median-read-position {params.read_pos} " 
+          "--min-median-base-quality {params.base_qual} "
+          "--min-allele-fraction {params.min_allele} "
+          "--contamination-table {input.contam} "
+          "--tmp-dir {params.tmp_dir} &> {log}"

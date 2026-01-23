@@ -20,10 +20,10 @@ mutect:
   read_pos: 10
   base_qual: 30
   min_allele: 0.05
-  progress_seconds: 60
+  progress_seconds: 120
 
 java:
-  java_args: "-Xmx64G"
+  java_args: "-Xmx128G"
 
 muse:
   dbsnp: "/mnt/data/gdata/gatk/hg38/v0/Homo_sapiens_assembly38.dbsnp138.vcf.gz"
