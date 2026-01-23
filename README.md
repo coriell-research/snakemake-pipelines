@@ -5,6 +5,7 @@
 ## Current Workflows:
 
 - Paired-end RNA-seq processing and quantification
+- PAired-end ATAC-seq processing and peak calling with Genrich
 - De novo transcript assembly and quantification
 - Somatic variant calling from tumor-normal WES/WGS data
 - Estimation of bacterial read abundance from sequencing data using Kraken2 and Braken
