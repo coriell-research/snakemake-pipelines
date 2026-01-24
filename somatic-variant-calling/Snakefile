@@ -328,7 +328,7 @@ rule mutect2_paired:
         normal_name = lambda w: PAIRED_SAMPLES[str(w.sample)]['normal'],
         ref = config["gatk"]["ref"],
         glr = config["gatk"]["glr"],
-        pon = config["gatk"]["pon"]
+        pon = config["gatk"]["pon"],
         sec = config["mutect"]["progress_seconds"],
         java_args = config["java"]["java_args"],
         tmp_dir = MUTECT_PAIRED_OUT
@@ -378,8 +378,8 @@ rule pileup_summary:
 
 rule contamination_paired:
     input:
-        tumor = lambda w: f"{PILEUP_OUT}/{PAIRED_SAMPLES[str(w.sample)]['tumor']}.table",
-        normal = lambda w: f"{PILEUP_OUT}/{PAIRED_SAMPLES[str(w.sample)]['normal']}.table"
+        tumor = lambda w: f"{PILEUP_SUMMARY_OUT}/{PAIRED_SAMPLES[str(w.sample)]['tumor']}.table",
+        normal = lambda w: f"{PILEUP_SUMMARY_OUT}/{PAIRED_SAMPLES[str(w.sample)]['normal']}.table"
     output:
         f"{CONTAM_PAIRED_OUT}/{{sample}}.table"
     params:
