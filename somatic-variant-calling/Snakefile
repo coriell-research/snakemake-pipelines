@@ -346,11 +346,10 @@ rule mutect2_paired:
           "--normal {params.normal_name} "
           "--germline-resource {params.glr} "
           "--panel-of-normals {params.pon} "
-          "--create-output-variant-index true "
           "--f1r2-tar-gz {output.f1r2} "
           "--seconds-between-progress-updates {params.sec} "
           "--native-pair-hmm-threads {threads} "
-          "--create-output-variant-index true  &> {log} "
+          "--create-output-variant-index true  &> {log}"
 
 
 rule pileup_summary:
@@ -369,6 +368,7 @@ rule pileup_summary:
     shell:
         "gatk --java-options {params.java_args} GetPileupSummaries "
           "-I {input} "
+          "-O {output} "
           "-R {params.ref} "
           "-V {params.common_snps} "
           "-L {params.common_snps} "
