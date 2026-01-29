@@ -177,6 +177,7 @@ rule varscan_paired:
         java -jar /usr/local/programs/VarScan.jar somatic \
             {input.pileup} \
             {params.out_prefix} \
+            --mpileup 1 \
             --output-vcf 1 \
             --min-coverage {params.min_cov} \
             --min-var-freq {params.min_var_freq} \
