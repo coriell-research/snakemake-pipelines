@@ -106,14 +106,14 @@ rule merge_bam:
         bams = lambda w, input: " ".join([f"-I {f}" for f in input]),
         java_args = config["java"]["java_args"]
     log:
-        f"{MERGE_OUT}/{{sample}}.merge.log"
+        f"{MERGE_OUT}/{{sample}}.log"
     shell:
         "java {params.java_args} -jar /usr/local/programs/picard.jar MergeSamFiles "
           "{params} "
           "--OUTPUT {output} "
           "--ASSUME_SORTED true "
           "--CREATE_INDEX true "
-          "--SORT_ORDER coordinate &> {log}"
+          "--SORT_ORDER coordinate"
 
 
 rule mark_duplicates:
@@ -125,14 +125,14 @@ rule mark_duplicates:
     params:
         java_args = config["java"]["java_args"]
     log:
-        f"{MARKDUP_OUT}/{{sample}}.markduplicates.log",
+        f"{MARKDUP_OUT}/{{sample}}.log",
     shell:
         "java {params.java_args} -jar /usr/local/programs/picard.jar MarkDuplicates "
           "-I {input} "
           "-O {output.bam} "
           "-M {output.metrics} "
           "--ASSUME_SORT_ORDER coordinate "
-          "--CREATE_INDEX true &> {log}"
+          "--CREATE_INDEX true "
 
 
 rule mpileup_paired:
@@ -144,14 +144,13 @@ rule mpileup_paired:
     params:
         ref = config["bwa"]["idx"],
         max_depth = 10000,
-        min_mapq = 20,
-        min_baq = 30
+        min_mapq = 20
     shell:
         """
         samtools mpileup \
             -d {params.max_depth} \
             -q {params.min_mapq} \
-            -Q {params.min_baq} \
+            --no-BAQ \
             -f {params.ref} \
             -o {output.pileup} \
             {input.normal} {input.tumor}
@@ -185,7 +184,7 @@ rule varscan_paired:
             --strand-filter {params.strand_filter} \
             --output-snp {output.snp_vcf} \
             --output-indel {output.indel_vcf} \
-            &> {log}
+            2> {log}
         """
 
 
@@ -196,7 +195,7 @@ rule varscan_filter_paired:
     output:
         vcf_filtered = f"{VARSCAN_PAIRED_OUT}/{{sample}}.snp.Somatic.hc.vcf"
     log:
-        f"{VARSCAN_PAIRED_OUT}/{{sample}}.somaticFilter.log"
+        f"{VARSCAN_PAIRED_OUT}/{{sample}}.filter.log"
     params:
         min_cov = 10,
         min_reads = 4,
@@ -214,7 +213,7 @@ rule varscan_filter_paired:
             --p-value {params.p_value} \
             --indel-file {input.indel_vcf} \
             --output-file {output.vcf_filtered} \
-            2&> {log}
+            2> {log}
         """
 
 
@@ -224,18 +223,18 @@ rule varscan_readcounts:
         vcf = f"{VARSCAN_PAIRED_OUT}/{{sample}}.snp.Somatic.hc.vcf"
     output:
         readcounts = f"{VARSCAN_PAIRED_OUT}/{{sample}}.readcounts"
+    log:
+        f"{VARSCAN_PAIRED_OUT}/{{sample}}.readcounts.log"
     params:
         min_cov = 10,
         min_qual = 15
-    log:
-        f"{VARSCAN_PAIRED_OUT}/{{sample}}.readcounts.log"
     shell:
         """
         java -jar /usr/local/programs/VarScan.jar readcounts {input.pileup} \
           --variants-file {input.vcf} \
-          --ouput-file {output.readcounts} \
+          --output-file {output.readcounts} \
           --min-coverage {params.min_cov} \
-          --min-base-qual {params.min_qual} &> {log}
+          --min-base-qual {params.min_qual} 2> {log}
         """
 
 
@@ -262,7 +261,7 @@ rule varscan_fpfilter_paired:
             --min-var-freq {params.min_var_freq} \
             --min-read-pos {params.min_read_pos} \
             --min-strandedness {params.min_strandedness} \
-            &> {log}
+            2> {log}
         """
 
 
@@ -288,7 +287,7 @@ rule muse_call_paired:
             -f {params.ref} \
             -n {threads} \
             {input.tumor} {input.normal} \
-            &> {log}
+            2> {log}
         """
 
 
@@ -314,7 +313,7 @@ rule muse_sump_paired:
             -n {threads} \
             -O {output.vcf} \
             -D {params.dbsnp} \
-            &> {log}
+            2> {log}
         """
 
 
