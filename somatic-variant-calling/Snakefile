@@ -159,22 +159,32 @@ rule mpileup_paired:
 
 rule varscan_paired:
     input:
-        pileup = f"{VARSCAN_PAIRED_OUT}/{{sample}}.pileup"
+        tumor = lambda w: f"{MARKDUP_OUT}/{PAIRED_SAMPLES[str(w.sample)]['tumor']}.bam",
+        normal = lambda w: f"{MARKDUP_OUT}/{PAIRED_SAMPLES[str(w.sample)]['normal']}.bam"
     output:
         snp_vcf = f"{VARSCAN_PAIRED_OUT}/{{sample}}.snp.vcf",
         indel_vcf = f"{VARSCAN_PAIRED_OUT}/{{sample}}.indel.vcf"
     log:
         f"{VARSCAN_PAIRED_OUT}/{{sample}}.somatic.log"
     params:
+        max_depth = 100000,
+        min_mapq = 20,
+        ref = config["bwa"]["idx"],
         out_prefix = f"{VARSCAN_PAIRED_OUT}/{{sample}}",
         min_cov = 10,
         min_var_freq = 0.05,
-        somatic_p = 0.005,
+        somatic_p = 0.05,
         strand_filter = 1
     shell:
         """
+        samtools mpileup \
+            -d {params.max_depth} \
+            -q {params.min_mapq} \
+            --no-BAQ \
+            -f {params.ref} \
+            {input.normal} {input.tumor} |
         java -jar /usr/local/programs/VarScan.jar somatic \
-            {input.pileup} \
+            - \
             {params.out_prefix} \
             --mpileup 1 \
             --output-vcf 1 \
@@ -201,7 +211,7 @@ rule varscan_filter_paired:
         min_reads = 4,
         min_strands = 1,
         min_var_freq = 0.05,
-        p_value = 0.005
+        p_value = 0.05
     shell:
         """
         java -jar /usr/local/programs/VarScan.jar somaticFilter \
@@ -216,25 +226,41 @@ rule varscan_filter_paired:
             2> {log}
         """
 
-
-rule varscan_readcounts:
+# Extracts only SNV positions from VarScan somatic hc calls for use in bam-readcounts
+rule get_site_list:
     input:
-        pileup = f"{VARSCAN_PAIRED_OUT}/{{sample}}.pileup",
         vcf = f"{VARSCAN_PAIRED_OUT}/{{sample}}.snp.Somatic.hc.vcf"
+    output:
+        site_list = f"{VARSCAN_PAIRED_OUT}/{{sample}}.sitelist"
+    shell:
+        """
+        awk 'BEGIN{{FS=OFS="\t"}} !/^#/ {{print $1, $2, $2}}' {input.vcf} > {output.site_list}
+        """
+
+# Used for VarScan fpfilter
+rule bam_readcounts:
+    input:
+        tumor_bam = lambda w: f"{MARKDUP_OUT}/{PAIRED_SAMPLES[str(w.sample)]['tumor']}.bam",
+        vcf = f"{VARSCAN_PAIRED_OUT}/{{sample}}.snp.Somatic.hc.vcf",
+        site_list = f"{VARSCAN_PAIRED_OUT}/{{sample}}.sitelist"
     output:
         readcounts = f"{VARSCAN_PAIRED_OUT}/{{sample}}.readcounts"
     log:
         f"{VARSCAN_PAIRED_OUT}/{{sample}}.readcounts.log"
     params:
-        min_cov = 10,
-        min_qual = 15
+        ref = config["bwa"]["idx"],
+        max_depth = 100000,
+        min_mapq = 20
+    conda:
+        "bam-readcount"
     shell:
         """
-        java -jar /usr/local/programs/VarScan.jar readcounts {input.pileup} \
-          --variants-file {input.vcf} \
-          --output-file {output.readcounts} \
-          --min-coverage {params.min_cov} \
-          --min-base-qual {params.min_qual} 2> {log}
+        bam-readcount \
+          --min-mapping-quality {params.min_mapq} \
+          --max-count {params.max_depth} \
+          --reference-fasta {params.ref} \
+          --site-list {input.site_list} \
+          {input.tumor_bam} > {output.readcounts}
         """
 
 
