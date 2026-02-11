@@ -13,6 +13,8 @@ MUSE_PAIRED_OUT = f"{WORK_DIR}/muse_paired"
 PILEUP_SUMMARY_OUT = f"{WORK_DIR}/pileup_summary"
 MUTECT_PAIRED_OUT = f"{WORK_DIR}/mutect_paired"
 CONTAM_PAIRED_OUT = f"{WORK_DIR}/contam_paired"
+CONSENSUS_PAIRED_OUT = f"{WORK_DIR}/isec_paired"
+ANNOTATED_PAIRED_OUT = f"{WORK_DIR}/annotate_paired"
 
 # Define samples and experimental units
 SAMPLES = pd.read_csv("samples.csv", sep=",", header=0)
@@ -48,9 +50,7 @@ for sample_name, group in SAMPLES.groupby("sample_name"):
 
 rule all:
     input:
-        expand(f"{MUTECT_PAIRED_OUT}/{{sample}}.vcf.filtered.gz", sample=PAIRED_SAMPLES.keys()),
-        expand(f"{VARSCAN_PAIRED_OUT}/{{sample}}.snp.Somatic.hc.fpfilter.vcf", sample=PAIRED_SAMPLES.keys()),
-        expand(f"{MUSE_PAIRED_OUT}/{{sample}}.vcf", sample=PAIRED_SAMPLES.keys())
+        expand(f"{ANNOTATED_PAIRED_OUT}/{{sample}}.maf", sample=PAIRED_SAMPLES.keys())
 
 
 rule fastp:
@@ -133,28 +133,6 @@ rule mark_duplicates:
           "-M {output.metrics} "
           "--ASSUME_SORT_ORDER coordinate "
           "--CREATE_INDEX true "
-
-
-rule mpileup_paired:
-    input:
-        tumor = lambda w: f"{MARKDUP_OUT}/{PAIRED_SAMPLES[str(w.sample)]['tumor']}.bam",
-        normal = lambda w: f"{MARKDUP_OUT}/{PAIRED_SAMPLES[str(w.sample)]['normal']}.bam"
-    output:
-        pileup = f"{VARSCAN_PAIRED_OUT}/{{sample}}.pileup"
-    params:
-        ref = config["bwa"]["idx"],
-        max_depth = 10000,
-        min_mapq = 20
-    shell:
-        """
-        samtools mpileup \
-            -d {params.max_depth} \
-            -q {params.min_mapq} \
-            --no-BAQ \
-            -f {params.ref} \
-            -o {output.pileup} \
-            {input.normal} {input.tumor}
-        """
 
 
 rule varscan_paired:
@@ -290,6 +268,45 @@ rule varscan_fpfilter_paired:
             2> {log}
         """
 
+# Needed because VarScan does not add contigs to header
+rule varscan_rehead_vcf:
+    input:
+        vcf = f"{VARSCAN_PAIRED_OUT}/{{sample}}.snp.Somatic.hc.fpfilter.vcf"
+    output:
+        vcf_gz = temp(f"{VARSCAN_PAIRED_OUT}/{{sample}}.snp.Somatic.hc.fpfilter.vcf.gz"),
+        vcf_tbi = temp(f"{VARSCAN_PAIRED_OUT}/{{sample}}.snp.Somatic.hc.fpfilter.vcf.gz.tbi"),
+        rehead = temp(f"{VARSCAN_PAIRED_OUT}/{{sample}}.snp.Somatic.hc.fpfilter.rehead.vcf.gz"),
+        rehead_tbi = temp(f"{VARSCAN_PAIRED_OUT}/{{sample}}.snp.Somatic.hc.fpfilter.rehead.vcf.gz.tbi")
+    params:
+        fai = config["bwa"]["fai"]
+    shell:
+        """
+        bcftools view -Oz -o {output.vcf_gz} {input.vcf} && bcftools index -t {output.vcf_gz} 
+        bcftools reheader -f {params.fai} -o {output.rehead} {output.vcf_gz} && \
+        bcftools index -t {output.rehead}
+        """
+
+
+rule varscan_pass_norm_paired:
+    input:
+        vcf = f"{VARSCAN_PAIRED_OUT}/{{sample}}.snp.Somatic.hc.fpfilter.rehead.vcf.gz",
+        vcf_tbi = f"{VARSCAN_PAIRED_OUT}/{{sample}}.snp.Somatic.hc.fpfilter.rehead.vcf.gz.tbi",
+    output:
+        vcf = f"{VARSCAN_PAIRED_OUT}/{{sample}}.pass.vcf.gz",
+        tbi = f"{VARSCAN_PAIRED_OUT}/{{sample}}.pass.vcf.gz.tbi"
+    params:
+        ref = config["bwa"]["idx"],
+        buff = 10000,
+        multi_allele = "-",
+        check_ref = "s"
+    shell:
+        """
+        bcftools view --types 'snps' -f 'PASS' {input.vcf} | \
+        bcftools norm -c {params.check_ref} -m {params.multi_allele} -w {params.buff} -f {params.ref} | \
+        bcftools view -Oz -o {output.vcf} && \
+        bcftools index -t {output.vcf}
+        """
+
 
 rule muse_call_paired:
     input:
@@ -340,6 +357,26 @@ rule muse_sump_paired:
             -O {output.vcf} \
             -D {params.dbsnp} \
             2> {log}
+        """
+
+
+rule muse_pass_norm_paired:
+    input:
+        vcf = f"{MUSE_PAIRED_OUT}/{{sample}}.vcf"
+    output:
+        vcf = f"{MUSE_PAIRED_OUT}/{{sample}}.pass.vcf.gz",
+        tbi = f"{MUSE_PAIRED_OUT}/{{sample}}.pass.vcf.gz.tbi"
+    params:
+        ref = config["bwa"]["idx"],
+        buff = 10000,
+        multi_allele = "-",
+        check_ref = "s"
+    shell:
+        """
+        bcftools view --types 'snps' -f 'PASS' {input.vcf} | \
+        bcftools norm -c {params.check_ref} -m {params.multi_allele} -w {params.buff} -f {params.ref} | \
+        bcftools view -Oz -o {output.vcf} && \
+        bcftools index -t {output.vcf}
         """
 
 
@@ -429,7 +466,7 @@ rule filter_mutect_paired:
         bias = f"{MUTECT_PAIRED_OUT}/{{sample}}.f1r2.tar.gz",
         contam = f"{CONTAM_PAIRED_OUT}/{{sample}}.table"
     output:
-        vcf = f"{MUTECT_PAIRED_OUT}/{{sample}}.vcf.filtered.gz"
+        vcf = f"{MUTECT_PAIRED_OUT}/{{sample}}.filtered.vcf"
     params:
         ref = config["gatk"]['ref'],
         strategy = config["mutect"]['strategy'],
@@ -455,3 +492,69 @@ rule filter_mutect_paired:
           "--min-allele-fraction {params.min_allele} "
           "--contamination-table {input.contam} "
           "--tmp-dir {params.tmp_dir} &> {log}"
+
+
+rule mutect_pass_norm_paired:
+    input:
+        vcf = f"{MUTECT_PAIRED_OUT}/{{sample}}.filtered.vcf"
+    output:
+        vcf = f"{MUTECT_PAIRED_OUT}/{{sample}}.pass.vcf.gz",
+        tbi = f"{MUTECT_PAIRED_OUT}/{{sample}}.pass.vcf.gz.tbi"
+    params:
+        ref = config["bwa"]["idx"],
+        buff = 10000,
+        multi_allele = "-",
+        check_ref = "s"
+    shell:
+        """
+        bcftools view --types 'snps' -f 'PASS' {input.vcf} | \
+        bcftools norm -c {params.check_ref} -m {params.multi_allele} -w {params.buff} -f {params.ref} | \
+        bcftools view -Oz -o {output.vcf} && \
+        bcftools index -t {output.vcf}
+        """
+
+
+rule consensus_calls:
+    input:
+        varscan_vcf = f"{VARSCAN_PAIRED_OUT}/{{sample}}.pass.vcf.gz",
+        muse_vcf = f"{MUSE_PAIRED_OUT}/{{sample}}.pass.vcf.gz",
+        mutect_vcf = f"{MUTECT_PAIRED_OUT}/{{sample}}.pass.vcf.gz"
+    output:
+        sites_vcf = f"{CONSENSUS_PAIRED_OUT}/{{sample}}/{{sample}}.vcf.gz"
+    params:
+        prefix_dir = f"{CONSENSUS_PAIRED_OUT}/{{sample}}",
+        ref = config["bwa"]["idx"]
+    shell:
+        """
+        # Get the consensus
+        bcftools isec -c all -n=3 {input.varscan_vcf} {input.muse_vcf} {input.mutect_vcf} -p {params.prefix_dir}
+        
+        # Create a regions file to use for subsetting
+        awk 'BEGIN {{OFS="\t"}} {{print $1, $2}}' {params.prefix_dir}/sites.txt > {params.prefix_dir}/regions.txt
+
+        # Select those sites present in all from the Mutect2 file
+        bcftools view -R {params.prefix_dir}/regions.txt -Oz -o {output.sites_vcf} {input.mutect_vcf}
+        bcftools index -t {output.sites_vcf}
+        """
+
+
+rule annotate_consensus:
+    input:
+        cons_vcf = f"{CONSENSUS_PAIRED_OUT}/{{sample}}/{{sample}}.vcf.gz"
+    output:
+        maf = f"{ANNOTATED_PAIRED_OUT}/{{sample}}.maf"
+    log:
+        f"{ANNOTATED_PAIRED_OUT}/{{sample}}.log"
+    params:
+        data_source = config["gatk"]["data_source"],
+        ref = config["bwa"]["idx"]
+    shell:
+        """
+        gatk Funcotator \
+            --data-sources-path {params.data_source} \
+            --output {output.maf} \
+            --output-file-format MAF \
+            --ref-version hg38 \
+            --reference {params.ref} \
+            --variant {input.cons_vcf} &> {log}
+        """
