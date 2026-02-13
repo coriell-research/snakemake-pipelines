@@ -28,3 +28,8 @@ java:
 
 muse:
   dbsnp: "/mnt/data/gdata/gatk/hg38/v0/Homo_sapiens_assembly38.dbsnp138.vcf.gz"
+
+cnvkit:
+  # Agilent Sure Select v6 All Exons padded BED file
+  baits: "/home/gennaro/data/projects/20250721_diego-cancer-biobank-wxs/doc/S07604514_Padded.bed"
+  method: "hybrid"

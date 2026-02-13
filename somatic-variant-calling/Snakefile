@@ -15,6 +15,7 @@ MUTECT_PAIRED_OUT = f"{WORK_DIR}/mutect_paired"
 CONTAM_PAIRED_OUT = f"{WORK_DIR}/contam_paired"
 CONSENSUS_PAIRED_OUT = f"{WORK_DIR}/isec_paired"
 ANNOTATED_PAIRED_OUT = f"{WORK_DIR}/annotate_paired"
+CNVKIT_PAIRED_OUT = f"{WORK_DIR}/cnvkit_paired"
 
 # Define samples and experimental units
 SAMPLES = pd.read_csv("samples.csv", sep=",", header=0)
@@ -50,7 +51,9 @@ for sample_name, group in SAMPLES.groupby("sample_name"):
 
 rule all:
     input:
-        expand(f"{ANNOTATED_PAIRED_OUT}/{{sample}}.maf", sample=PAIRED_SAMPLES.keys())
+        expand(f"{ANNOTATED_PAIRED_OUT}/{{sample}}.maf", sample=PAIRED_SAMPLES.keys()),
+        f"{CNVKIT_PAIRED_OUT}/reference.cnn"
+
 
 
 rule fastp:
@@ -557,4 +560,35 @@ rule annotate_consensus:
             --ref-version hg38 \
             --reference {params.ref} \
             --variant {input.cons_vcf} &> {log}
+        """
+
+
+rule cnvkit_paired:
+    input:
+        tumors = expand(f"{MARKDUP_OUT}/{{sample}}_tumor.bam", sample=PAIRED_SAMPLES.keys()),
+        normals = expand(f"{MARKDUP_OUT}/{{sample}}_normal.bam", sample=PAIRED_SAMPLES.keys())
+    output:
+        cnn = f"{CNVKIT_PAIRED_OUT}/reference.cnn"
+    params:
+        baits = config["cnvkit"]["baits"],
+        ref = config["bwa"]["idx"],
+        method = config["cnvkit"]["method"],
+        out_dir = CNVKIT_PAIRED_OUT
+    threads:
+        8
+    conda:
+        "cnvkit"
+    shell:
+        """
+        cnvkit.py batch {input.tumors} \
+            --normal {input.normals} \
+            --targets {params.baits} \
+            --fasta {params.ref} \
+            --output-reference {output.cnn} \
+            --output-dir {params.out_dir} \
+            --processes {threads} \
+            --method {params.method} \
+            --drop-low-coverage \
+            --diagram \
+            --scatter
         """
