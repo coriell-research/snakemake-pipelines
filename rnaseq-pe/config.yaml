@@ -1,17 +1,15 @@
 fastp:
-  threads: 12
   extra_params: "--detect_adapter_for_pe"
 
 star:
-  index_dir: "/home/gennaro/data/references/GRCh38/GENCODE/v48/STAR_idx" 
-  threads: 12
-  readFilesCommand: "zcat" 
+  index_dir: "/home/gennaro/data/references/GRCh38/GENCODE/v48/STAR_idx"
+  readFilesCommand: "zcat"
   twopassMode: "Basic" 
   outFilterMultimapNmax: 100 
   winAnchorMultimapNmax: 100
-  alignSJoverhangMin: 8 
-  alignSJDBoverhangMin: 1 
-  outFilterMismatchNmax: 999 
+  alignSJoverhangMin: 8
+  alignSJDBoverhangMin: 1
+  outFilterMismatchNmax: 999
   outFilterMismatchNoverLmax: 0.1 
   alignIntronMin: 20 
   alignIntronMax: 1000000 
@@ -26,18 +24,16 @@ star:
 
 salmon:
   index_dir: "/home/gennaro/data/references/GRCh38/rmskProfiler/hg38-resources_v48/rmsk-salmon_index"
-  threads: 12
   lib_type: "A"
   gibbs: 100
   extra_params: "--gcBias --seqBias --posBias"
 
-rseqc:
-  gene_model: "/home/gennaro/data/references/GRCh38/GENCODE/v48/gencode.v48.basic.annotation.bed"
-  min_cov: 10
-  sample_size: 100
+rustqc:
+  gtf: "/home/gennaro/data/references/GRCh38/GENCODE/v48/gencode.v48.basic.annotation.gtf"
+  biotype: "gene_type"
+  stranded: "unstranded"
 
 mosdepth:
-  window_size: 500 
-  exclude_flag: 1796
+  window_size: 500
+  extra_params: "--fast-mode"
   include_flag: 3
-  extra: "--fast-mode"
