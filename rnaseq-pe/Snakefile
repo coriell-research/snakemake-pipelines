@@ -11,7 +11,7 @@ FASTP_OUT = f"{WORK_DIR}/fastp"
 STAR_OUT = f"{WORK_DIR}/star"
 SALMON_OUT = f"{WORK_DIR}/salmon"
 MOSDEPTH_OUT = f"{WORK_DIR}/mosdepth"
-RSEQC_OUT = f"{WORK_DIR}/reseqc"
+RUSTQC_OUT = f"{WORK_DIR}/rustqc"
 MULTIQC_OUT = f"{WORK_DIR}/multiqc"
 
 
@@ -33,19 +33,22 @@ rule fastp:
         f"{FASTP_OUT}/{{sample}}_fastp.log"
     params:
         extra = config["fastp"]["extra_params"]
+    threads:
+        12
     shell:
         """
         fastp -i {input.r1} \
               -I {input.r2} \
               -o {output.r1_out} \
               -O {output.r2_out} \
+              --thread {threads} \
               {params.extra} \
               --html {output.html} \
               --json {output.json} &> {log}
         """
 
 
-rule star_align:
+rule star:
     priority: 
         50
     input:
@@ -56,7 +59,8 @@ rule star_align:
         log_final = f"{STAR_OUT}/{{sample}}.Log.final.out"
     log:
         f"{STAR_OUT}/{{sample}}/star.log"
-    threads: config["star"]["threads"]
+    threads: 
+        12
     params:
         star_index = config["star"]["index_dir"],
         out_prefix = f"{STAR_OUT}/{{sample}}.",
@@ -106,7 +110,7 @@ rule star_align:
        """
 
 
-rule salmon_quant:
+rule salmon:
     priority:
         60
     input:
@@ -120,17 +124,19 @@ rule salmon_quant:
     params:
         salmon_index = config["salmon"]["index_dir"],
         extra = config["salmon"]["extra_params"],
-        threads = config["salmon"]["threads"],
         lib_type = config["salmon"]["lib_type"],
         gibbs = config["salmon"]["gibbs"],
         output_dir = f"{SALMON_OUT}/{{sample}}"
+    threads:
+        12
     shell:
       """
         salmon quant \
           --index {params.salmon_index} \
           --libType {params.lib_type} \
-          --mates1 {input.r1} --mates2 {input.r2} \
-          --threads {params.threads} \
+          --mates1 {input.r1} \
+          --mates2 {input.r2} \
+          --threads {threads} \
           --numGibbsSamples {params.gibbs} \
           --output {params.output_dir} {params.extra} &> {log}
       """
@@ -148,73 +154,60 @@ rule mosdepth:
         regions = f"{MOSDEPTH_OUT}/{{sample}}.regions.bed.gz"
     params:
         prefix = f"{MOSDEPTH_OUT}/{{sample}}",
-        window = 500
+        window = config["mosdepth"]["window_size"],
+        include_flag = config["mosdepth"]["include_flag"], 
+        extra_params = config["mosdepth"]["extra_params"]
+    log:
+        f"{MOSDEPTH_OUT}/{{sample}}/mosdepth.log"
     threads:
-        4
+        6
     shell:
         """
-        mosdepth -t {threads} \
+        mosdepth \
+          --threads {threads} \
           --by {params.window} \
-          --fast-mode \
+          --include-flag {params.include_flag} \
+          {params.extra_params} \
           {params.prefix} \
-          {input.bam}
+          {input.bam} &> {log}
         """
 
 
-rule read_distribution:
-    priority:
-        40
+rule rustqc:
     input:
         bam = f"{STAR_OUT}/{{sample}}.Aligned.sortedByCoord.out.bam",
+        bai = f"{STAR_OUT}/{{sample}}.Aligned.sortedByCoord.out.bam.bai"
     output:
-        report = f"{RSEQC_OUT}/{{sample}}.read_distribution.txt"
-    log:
-        f"{RSEQC_OUT}/{{sample}}.read_distribution.log"
+        json = f"{RUSTQC_OUT}/{{sample}}/{{sample}}_summary.json"
     params:
-        gene_model = config["rseqc"]["gene_model"]
-    conda:
-        "rseqc"
-    shell:
-        """read_distribution.py -i {input.bam} -r {params.gene_model} > {output}"""
-
-
-# tin.py writes to working dir 
-rule tin:
-    priority:
-        10
-    input:
-        bam = f"{STAR_OUT}/{{sample}}.Aligned.sortedByCoord.out.bam",
-    output:
-        out_tin = f"{RSEQC_OUT}/{{sample}}.Aligned.sortedByCoord.out.tin.xls",
-        out_summary = f"{RSEQC_OUT}/{{sample}}.Aligned.sortedByCoord.out.summary.txt"
-    log:
-        f"{RSEQC_OUT}/{{sample}}.tin.log"
-    params:
-        gene_model = config["rseqc"]["gene_model"],
-        min_cov = config["rseqc"]["min_cov"],
-        sample_size = config["rseqc"]["sample_size"]
-    conda:
-        "rseqc"
+        gtf = config["rustqc"]["gtf"],
+        biotype = config["rustqc"]["biotype"],
+        stranded = config["rustqc"]["stranded"],
+        outdir = f"{RUSTQC_OUT}/{{sample}}",
+    threads: 
+        8
     shell:
         """
-        tin.py -i {input.bam} \
-          -r {params.gene_model} \
-          -c {params.min_cov} \
-          -n {params.sample_size} && \
-          mv {wildcards.sample}.Aligned.sortedByCoord.out.summary.txt {output.out_summary} && \
-          mv {wildcards.sample}.Aligned.sortedByCoord.out.tin.xls {output.out_tin}
+        rustqc rna {input.bam} \
+        --gtf {params.gtf} \
+        --sample-name {wildcards.sample} \
+        --json-summary {output.json} \
+        --stranded {params.stranded} \
+        --paired \
+        --skip-dup-check \
+        --biotype-attribute {params.biotype} \
+        --threads {threads} \
+        --outdir {params.outdir}
         """
 
 
 rule multiqc_report:
     input:
         expand(f"{FASTP_OUT}/{{sample}}.fastp.html", sample=SAMPLES_LIST),
-        expand(f"{FASTP_OUT}/{{sample}}.fastp.json", sample=SAMPLES_LIST),
         expand(f"{STAR_OUT}/{{sample}}.Log.final.out", sample=SAMPLES_LIST),
         expand(f"{SALMON_OUT}/{{sample}}/quant.sf", sample=SAMPLES_LIST),
-        expand(f"{RSEQC_OUT}/{{sample}}.read_distribution.txt", sample=SAMPLES_LIST),
-        expand(f"{RSEQC_OUT}/{{sample}}.Aligned.sortedByCoord.out.tin.xls", sample=SAMPLES_LIST),
-        expand(f"{MOSDEPTH_OUT}/{{sample}}.mosdepth.summary.txt", sample=SAMPLES_LIST)
+        expand(f"{MOSDEPTH_OUT}/{{sample}}.mosdepth.summary.txt", sample=SAMPLES_LIST),
+        expand(f"{RUSTQC_OUT}/{{sample}}/{{sample}}_summary.json", sample=SAMPLES_LIST)
     output:
         html_report = f"{MULTIQC_OUT}/multiqc_report.html",
         data_dir = directory(f"{MULTIQC_OUT}/multiqc_data")
@@ -223,6 +216,7 @@ rule multiqc_report:
     params:
         search_dir = WORK_DIR,
         output_dir = MULTIQC_OUT
+    conda:
+        "multiqc"
     shell:
         "multiqc {params.search_dir} -o {params.output_dir} &> {log}"
-
