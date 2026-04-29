@@ -49,13 +49,12 @@ rule fastp:
 
 
 rule star:
-    priority: 
-        50
     input:
         r1 = f"{FASTP_OUT}/{{sample}}.trimmed.1.fq.gz",
         r2 = f"{FASTP_OUT}/{{sample}}.trimmed.2.fq.gz"
     output:
         bam = f"{STAR_OUT}/{{sample}}.Aligned.sortedByCoord.out.bam",
+        bai = f"{STAR_OUT}/{{sample}}.Aligned.sortedByCoord.out.bam.bai",
         log_final = f"{STAR_OUT}/{{sample}}.Log.final.out"
     log:
         f"{STAR_OUT}/{{sample}}/star.log"
@@ -111,14 +110,11 @@ rule star:
 
 
 rule salmon:
-    priority:
-        60
     input:
         r1 = f"{FASTP_OUT}/{{sample}}.trimmed.1.fq.gz",
         r2 = f"{FASTP_OUT}/{{sample}}.trimmed.2.fq.gz", 
     output:
         quant_sf = f"{SALMON_OUT}/{{sample}}/quant.sf",
-        lib_format_counts = f"{SALMON_OUT}/{{sample}}/lib_format_counts.json"
     log:
         f"{SALMON_OUT}/{{sample}}/salmon.log"
     params:
@@ -143,8 +139,6 @@ rule salmon:
 
 
 rule mosdepth:
-    priority:
-        50
     input:
         bam = f"{STAR_OUT}/{{sample}}.Aligned.sortedByCoord.out.bam"
     output:
@@ -160,7 +154,7 @@ rule mosdepth:
     log:
         f"{MOSDEPTH_OUT}/{{sample}}/mosdepth.log"
     threads:
-        6
+        12
     shell:
         """
         mosdepth \
@@ -185,7 +179,7 @@ rule rustqc:
         stranded = config["rustqc"]["stranded"],
         outdir = f"{RUSTQC_OUT}/{{sample}}",
     threads: 
-        8
+        12
     shell:
         """
         rustqc rna {input.bam} \
@@ -206,7 +200,6 @@ rule multiqc_report:
         expand(f"{FASTP_OUT}/{{sample}}.fastp.html", sample=SAMPLES_LIST),
         expand(f"{STAR_OUT}/{{sample}}.Log.final.out", sample=SAMPLES_LIST),
         expand(f"{SALMON_OUT}/{{sample}}/quant.sf", sample=SAMPLES_LIST),
-        expand(f"{MOSDEPTH_OUT}/{{sample}}.mosdepth.summary.txt", sample=SAMPLES_LIST),
         expand(f"{RUSTQC_OUT}/{{sample}}/{{sample}}_summary.json", sample=SAMPLES_LIST)
     output:
         html_report = f"{MULTIQC_OUT}/multiqc_report.html",
