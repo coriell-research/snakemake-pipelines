@@ -49,6 +49,7 @@ rule fastp:
 
 
 rule star:
+    priority: 50
     input:
         r1 = f"{FASTP_OUT}/{{sample}}.trimmed.1.fq.gz",
         r2 = f"{FASTP_OUT}/{{sample}}.trimmed.2.fq.gz"
@@ -110,6 +111,7 @@ rule star:
 
 
 rule salmon:
+    priority: 50
     input:
         r1 = f"{FASTP_OUT}/{{sample}}.trimmed.1.fq.gz",
         r2 = f"{FASTP_OUT}/{{sample}}.trimmed.2.fq.gz", 

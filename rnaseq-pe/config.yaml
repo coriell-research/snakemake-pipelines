@@ -1,8 +1,11 @@
 fastp:
   extra_params: "--detect_adapter_for_pe"
 
+# /home/gennaro/data/references/GRCh38/GENCODE/v48/STAR_idx (hg38 with ERCC + GFP)
+# /home/gennaro/data/references/GRCm38/GENCODE/M25/STAR_idx (mm10 with ERCC + GFP)
+# /home/gennaro/data/references/GRCm39/GENCODE/M38/STAR_idx (mm39 with ERCC + GFP)
 star:
-  index_dir: "/home/gennaro/data/references/GRCh38/GENCODE/v48/STAR_idx"
+  index_dir: "/home/gennaro/data/references/GRCh38/GENCODE/v48/STAR_idx" # (hg38 with ERCC + GFP)
   readFilesCommand: "zcat"
   twopassMode: "Basic" 
   outFilterMultimapNmax: 100 
@@ -22,6 +25,11 @@ star:
   outSAMtype: "BAM SortedByCoordinate"
   outSAMattributes: "Standard"
 
+
+# /home/gennaro/data/references/GRCh38/GENCODE/v48/salmon_idx (hg38 with ERCC + GFP, no TEs)
+# /home/gennaro/data/references/GRCm38/GENCODE/M25/salmon_idx (mm10 with ERCC + GFP, no TES)
+# /home/gennaro/data/references/GRCm39/GENCODE/M38/salmon_idx (mm39 with ERCC + GFP, no TEs)
+# /home/gennaro/data/references/GRCm38/rmskProfiler/mm10-resources/rmsk-salmon_index (mm10 + TEs)
 salmon:
   index_dir: "/home/gennaro/data/references/GRCh38/rmskProfiler/hg38-resources_v48/rmsk-salmon_index"
   lib_type: "A"
