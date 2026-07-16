@@ -37,7 +37,7 @@ salmon:
   extra_params: "--gcBias --seqBias --posBias"
 
 rustqc:
-  gtf: "/home/gennaro/data/references/GRCh38/GENCODE/v48/gencode.v48.basic.annotation.gtf"
+  gtf: "/home/gennaro/data/references/GRCh38/GENCODE/v48/gencode.v48.basic.annotation.gtf.gz"
   biotype: "gene_type"
   stranded: "unstranded"
 
