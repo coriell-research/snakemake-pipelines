@@ -1,10 +1,12 @@
 fastp:
+  threads: 8
   extra_params: "--detect_adapter_for_pe"
 
 # /home/gennaro/data/references/GRCh38/GENCODE/v48/STAR_idx (hg38 with ERCC + GFP)
 # /home/gennaro/data/references/GRCm38/GENCODE/M25/STAR_idx (mm10 with ERCC + GFP)
 # /home/gennaro/data/references/GRCm39/GENCODE/M38/STAR_idx (mm39 with ERCC + GFP)
 star:
+  threads: 12
   index_dir: "/home/gennaro/data/references/GRCh38/GENCODE/v48/STAR_idx" # (hg38 with ERCC + GFP)
   readFilesCommand: "zcat"
   twopassMode: "Basic" 
@@ -31,17 +33,20 @@ star:
 # /home/gennaro/data/references/GRCm39/GENCODE/M38/salmon_idx (mm39 with ERCC + GFP, no TEs)
 # /home/gennaro/data/references/GRCm38/rmskProfiler/mm10-resources/rmsk-salmon_index (mm10 + TEs)
 salmon:
+  threads: 8
   index_dir: "/home/gennaro/data/references/GRCh38/rmskProfiler/hg38-resources_v48/rmsk-salmon_index"
   lib_type: "A"
   gibbs: 100
   extra_params: "--gcBias --seqBias --posBias"
 
 rustqc:
+  threads: 4
   gtf: "/home/gennaro/data/references/GRCh38/GENCODE/v48/gencode.v48.basic.annotation.gtf.gz"
   biotype: "gene_type"
   stranded: "reverse"
 
 mosdepth:
+  threads: 4
   window_size: 500
   extra_params: "--fast-mode"
   include_flag: 3

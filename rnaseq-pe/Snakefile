@@ -1,18 +1,20 @@
+import os
 import pandas as pd
-
 
 configfile: "config.yaml"
 
-SAMPLES = pd.read_csv("samples.csv", sep=",", header=0)
-SAMPLES_LIST = SAMPLES["sample_name"].tolist()
 
-WORK_DIR = "../data"
+SAMPLES = pd.read_csv("samples.csv", sep=",").set_index("sample_name", drop=False)
+SAMPLES_LIST = SAMPLES.index.tolist()
+
+WORK_DIR = config.get("work_dir", "../data")
 FASTP_OUT = f"{WORK_DIR}/fastp"
 STAR_OUT = f"{WORK_DIR}/star"
 SALMON_OUT = f"{WORK_DIR}/salmon"
 MOSDEPTH_OUT = f"{WORK_DIR}/mosdepth"
 RUSTQC_OUT = f"{WORK_DIR}/rustqc"
 MULTIQC_OUT = f"{WORK_DIR}/multiqc"
+LOG_DIR = f"{WORK_DIR}/logs"
 
 
 rule all:
@@ -22,19 +24,19 @@ rule all:
 
 rule fastp:
     input:
-        r1 = lambda w: SAMPLES.loc[SAMPLES["sample_name"] == w.sample, "read1"].item(),
-        r2 = lambda w: SAMPLES.loc[SAMPLES["sample_name"] == w.sample, "read2"].item()
+        r1 = lambda w: SAMPLES.loc[w.sample, "read1"],
+        r2 = lambda w: SAMPLES.loc[w.sample, "read2"]
     output:
         r1_out = temp(f"{FASTP_OUT}/{{sample}}.trimmed.1.fq.gz"),
         r2_out = temp(f"{FASTP_OUT}/{{sample}}.trimmed.2.fq.gz"),
         html = f"{FASTP_OUT}/{{sample}}.fastp.html",
         json = f"{FASTP_OUT}/{{sample}}.fastp.json"
     log:
-        f"{FASTP_OUT}/{{sample}}_fastp.log"
+        f"{LOG_DIR}/fastp/{{sample}}.log"
     params:
         extra = config["fastp"]["extra_params"]
-    threads:
-        12
+    threads: 
+        config.get("threads", {}).get("fastp", 8)
     shell:
         """
         fastp -i {input.r1} \
@@ -58,9 +60,9 @@ rule star:
         bai = f"{STAR_OUT}/{{sample}}.Aligned.sortedByCoord.out.bam.bai",
         log_final = f"{STAR_OUT}/{{sample}}.Log.final.out"
     log:
-        f"{STAR_OUT}/{{sample}}/star.log"
+        f"{LOG_DIR}/star/{{sample}}.log"
     threads: 
-        12
+        config.get("threads", {}).get("star", 12)
     params:
         star_index = config["star"]["index_dir"],
         out_prefix = f"{STAR_OUT}/{{sample}}.",
@@ -83,42 +85,42 @@ rule star:
         out_type = config["star"]["outSAMtype"],
         sam_attributes = config["star"]["outSAMattributes"]
     shell:
-      """
-      STAR --genomeDir {params.star_index} \
-        --readFilesIn {input.r1} {input.r2} \
-        --outFileNamePrefix {params.out_prefix} \
-        --runThreadN {threads} \
-        --readFilesCommand {params.read_cmd} \
-        --twopassMode {params.two_pass} \
-        --outFilterMultimapNmax {params.multi_mappers} \
-        --winAnchorMultimapNmax {params.multi_anchor} \
-        --alignSJoverhangMin {params.sj_overhang_min} \
-        --alignSJDBoverhangMin {params.sjdb_overhang_min} \
-        --outFilterMismatchNmax {params.mismatches} \
-        --outFilterMismatchNoverLmax {params.mismatch_ratio} \
-        --alignIntronMin {params.intron_min} \
-        --alignIntronMax {params.intron_max} \
-        --alignMatesGapMax {params.max_gap} \
-        --outFilterScoreMinOverLread {params.min_score_ratio} \
-        --outFilterMatchNminOverLread {params.min_match_ratio} \
-        --limitSjdbInsertNsj {params.n_junctions} \
-        --outSAMstrandField {params.strand_field} \
-        --quantMode {params.quant_mode} \
-        --outSAMtype {params.out_type} \
-        --outSAMattributes {params.sam_attributes} &> {log} && 
-        samtools index {output.bam}
-       """
+        """
+        STAR --genomeDir {params.star_index} \
+          --readFilesIn {input.r1} {input.r2} \
+          --outFileNamePrefix {params.out_prefix} \
+          --runThreadN {threads} \
+          --readFilesCommand {params.read_cmd} \
+          --twopassMode {params.two_pass} \
+          --outFilterMultimapNmax {params.multi_mappers} \
+          --winAnchorMultimapNmax {params.multi_anchor} \
+          --alignSJoverhangMin {params.sj_overhang_min} \
+          --alignSJDBoverhangMin {params.sjdb_overhang_min} \
+          --outFilterMismatchNmax {params.mismatches} \
+          --outFilterMismatchNoverLmax {params.mismatch_ratio} \
+          --alignIntronMin {params.intron_min} \
+          --alignIntronMax {params.intron_max} \
+          --alignMatesGapMax {params.max_gap} \
+          --outFilterScoreMinOverLread {params.min_score_ratio} \
+          --outFilterMatchNminOverLread {params.min_match_ratio} \
+          --limitSjdbInsertNsj {params.n_junctions} \
+          --outSAMstrandField {params.strand_field} \
+          --quantMode {params.quant_mode} \
+          --outSAMtype {params.out_type} \
+          --outSAMindex BAM \
+          --outSAMattributes {params.sam_attributes} &> {log}
+        """
 
 
 rule salmon:
     priority: 50
     input:
         r1 = f"{FASTP_OUT}/{{sample}}.trimmed.1.fq.gz",
-        r2 = f"{FASTP_OUT}/{{sample}}.trimmed.2.fq.gz", 
+        r2 = f"{FASTP_OUT}/{{sample}}.trimmed.2.fq.gz"
     output:
-        quant_sf = f"{SALMON_OUT}/{{sample}}/quant.sf",
+        quant_sf = f"{SALMON_OUT}/{{sample}}/quant.sf"
     log:
-        f"{SALMON_OUT}/{{sample}}/salmon.log"
+        f"{LOG_DIR}/salmon/{{sample}}.log"
     params:
         salmon_index = config["salmon"]["index_dir"],
         extra = config["salmon"]["extra_params"],
@@ -126,9 +128,9 @@ rule salmon:
         gibbs = config["salmon"]["gibbs"],
         output_dir = f"{SALMON_OUT}/{{sample}}"
     threads:
-        12
+        config.get("threads", {}).get("salmon", 8)
     shell:
-      """
+        """
         salmon quant \
           --index {params.salmon_index} \
           --libType {params.lib_type} \
@@ -137,16 +139,16 @@ rule salmon:
           --threads {threads} \
           --numGibbsSamples {params.gibbs} \
           --output {params.output_dir} {params.extra} &> {log}
-      """
+        """
 
 
 rule mosdepth:
     input:
-        bam = f"{STAR_OUT}/{{sample}}.Aligned.sortedByCoord.out.bam"
+        bam = f"{STAR_OUT}/{{sample}}.Aligned.sortedByCoord.out.bam",
+        bai = f"{STAR_OUT}/{{sample}}.Aligned.sortedByCoord.out.bam.bai"
     output:
         dist = f"{MOSDEPTH_OUT}/{{sample}}.mosdepth.global.dist.txt",
         summary = f"{MOSDEPTH_OUT}/{{sample}}.mosdepth.summary.txt",
-        per_base = f"{MOSDEPTH_OUT}/{{sample}}.per-base.bed.gz",
         regions = f"{MOSDEPTH_OUT}/{{sample}}.regions.bed.gz"
     params:
         prefix = f"{MOSDEPTH_OUT}/{{sample}}",
@@ -154,9 +156,9 @@ rule mosdepth:
         include_flag = config["mosdepth"]["include_flag"], 
         extra_params = config["mosdepth"]["extra_params"]
     log:
-        f"{MOSDEPTH_OUT}/{{sample}}/mosdepth.log"
+        f"{LOG_DIR}/mosdepth/{{sample}}.log"
     threads:
-        12
+        config.get("threads", {}).get("mosdepth", 4)
     shell:
         """
         mosdepth \
@@ -179,21 +181,23 @@ rule rustqc:
         gtf = config["rustqc"]["gtf"],
         biotype = config["rustqc"]["biotype"],
         stranded = config["rustqc"]["stranded"],
-        outdir = f"{RUSTQC_OUT}/{{sample}}",
+        outdir = f"{RUSTQC_OUT}/{{sample}}"
+    log:
+        f"{LOG_DIR}/rustqc/{{sample}}.log"
     threads: 
-        12
+        config.get("threads", {}).get("rustqc", 4)
     shell:
         """
         rustqc rna {input.bam} \
-        --gtf {params.gtf} \
-        --sample-name {wildcards.sample} \
-        --json-summary {output.json} \
-        --stranded {params.stranded} \
-        --paired \
-        --skip-dup-check \
-        --biotype-attribute {params.biotype} \
-        --threads {threads} \
-        --outdir {params.outdir}
+          --gtf {params.gtf} \
+          --sample-name {wildcards.sample} \
+          --json-summary {output.json} \
+          --stranded {params.stranded} \
+          --paired \
+          --skip-dup-check \
+          --biotype-attribute {params.biotype} \
+          --threads {threads} \
+          --outdir {params.outdir} &> {log}
         """
 
 
@@ -202,16 +206,17 @@ rule multiqc_report:
         expand(f"{FASTP_OUT}/{{sample}}.fastp.html", sample=SAMPLES_LIST),
         expand(f"{STAR_OUT}/{{sample}}.Log.final.out", sample=SAMPLES_LIST),
         expand(f"{SALMON_OUT}/{{sample}}/quant.sf", sample=SAMPLES_LIST),
+        expand(f"{MOSDEPTH_OUT}/{{sample}}.mosdepth.summary.txt", sample=SAMPLES_LIST),
         expand(f"{RUSTQC_OUT}/{{sample}}/{{sample}}_summary.json", sample=SAMPLES_LIST)
     output:
         html_report = f"{MULTIQC_OUT}/multiqc_report.html",
         data_dir = directory(f"{MULTIQC_OUT}/multiqc_data")
     log:
-        f"{MULTIQC_OUT}/multiqc.log"
+        f"{LOG_DIR}/multiqc/multiqc.log"
     params:
-        search_dir = WORK_DIR,
+        search_dirs = f"{FASTP_OUT} {STAR_OUT} {SALMON_OUT} {MOSDEPTH_OUT} {RUSTQC_OUT}",
         output_dir = MULTIQC_OUT
     conda:
         "multiqc"
     shell:
-        "multiqc {params.search_dir} -o {params.output_dir} &> {log}"
+        "multiqc --force {params.search_dirs} -o {params.output_dir} &> {log}"
