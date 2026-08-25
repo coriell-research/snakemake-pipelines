@@ -21,7 +21,6 @@ rule all:
         expand(f"{GENRICH_OUT}/{{sample}}.narrowPeak", sample=SAMPLES_LIST)
 
 
-# Trim adapters and low quality reads
 rule fastp:
     input:
         r1 = lambda w: SAMPLES.loc[SAMPLES["sample_name"] == w.sample, "read1"].values[0],
@@ -63,12 +62,12 @@ rule bowtie2:
         idx = config["bowtie2"]["idx"],
         max_insert = config["bowtie2"]["max_insert"],
         flags = config["bowtie2"]["flags"],
-        sort_mem = "4G",  # Added missing comma here
+        sort_mem = "4G",
         comp_threads = 4
     shell:
         """
         # 1. Align with bowtie2
-        # 2. Filter out mitochondrial reads (chrM) early to save processing
+        # 2. Filter out mitochondrial reads (chrM)
         # 3. Collate reads for fixmate
         # 4. Apply fixmate tags
         # 5. Position sort (needed for markdup)
@@ -107,7 +106,7 @@ rule genrich:
         log = f"{GENRICH_OUT}/{{sample}}.log"
     params:
          blacklist = config["genrich"]["blacklist"],
-         flags = config["genrich"]["flags"] # Ensure this contains '-j' for ATAC-seq Tn5 shift in config.yaml
+         flags = config["genrich"]["flags"]
     shell:
         """
         Genrich \
@@ -116,6 +115,7 @@ rule genrich:
           -k {output.pileup} \
           -f {output.log} \
           -E {params.blacklist} \
+          -j \
           {params.flags}
         """
 
