@@ -8,7 +8,7 @@ bowtie2:
 
 genrich:
     blacklist: "/home/gennaro/data/references/GRCh38/GENCODE/v48/excluderanges.bed"
-    flags: "-j -r -e chrM -S"
+    flags: "-r -e chrM -S"
 
 bedgraph2bigwig:
     chrom_sizes: "/home/gennaro/data/references/GRCh38/GENCODE/v48/GRCh38.primary_assembly.genome.fa.chrom_sizes"
