@@ -3,7 +3,7 @@ fastp:
 
 bowtie2:
   idx: "/home/gennaro/data/references/GRCh38/GENCODE/v48/bt2_idx"
-  mex_insert: 2000
+  max_insert: 2000
   flags: "--very-sensitive --no-mixed --no-discordant"
 
 genrich:
