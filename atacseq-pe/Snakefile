@@ -55,10 +55,10 @@ rule bowtie2:
     output:
         bam = f"{BOWTIE2_OUT}/{{sample}}.sorted.bam",
         stats = f"{BOWTIE2_OUT}/{{sample}}.stats.txt",
-        idx = f"{BOWTIE2_OUT}/{{sample}}.sorted.bam.csi" # Recommended: Track the index file too
+        idx = f"{BOWTIE2_OUT}/{{sample}}.sorted.bam.csi"
     log:
         f"{BOWTIE2_OUT}/{{sample}}.log"
-    threads: 16
+    threads: 8
     params:
         idx = config["bowtie2"]["idx"],
         max_insert = config["bowtie2"]["max_insert"],
