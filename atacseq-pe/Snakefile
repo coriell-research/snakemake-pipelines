@@ -54,7 +54,8 @@ rule bowtie2:
         r2 = f"{FASTP_OUT}/{{sample}}.trimmed.2.fq.gz"
     output:
         bam = f"{BOWTIE2_OUT}/{{sample}}.sorted.bam",
-        stats = f"{BOWTIE2_OUT}/{{sample}}.stats.txt"
+        stats = f"{BOWTIE2_OUT}/{{sample}}.stats.txt",
+        idx = f"{BOWTIE2_OUT}/{{sample}}.sorted.bam.csi" # Recommended: Track the index file too
     log:
         f"{BOWTIE2_OUT}/{{sample}}.log"
     threads: 16
@@ -66,24 +67,17 @@ rule bowtie2:
         comp_threads = 4
     shell:
         """
-        # 1. Align with bowtie2
-        # 2. Filter out mitochondrial reads (chrM)
-        # 3. Collate reads for fixmate
-        # 4. Apply fixmate tags
-        # 5. Position sort (needed for markdup)
-        # 6. Mark duplicates
-        
         bowtie2 -x {params.idx} \
             -1 {input.r1} \
             -2 {input.r2} \
             {params.flags} \
             --threads {threads} \
             --maxins {params.max_insert} 2> {log} | \
-        samtools view -h -e 'rname != "chrM" && rname != "MT"' - | \
-        samtools collate -u -O bam -@ {params.comp_threads} - | \
+        samtools view -u -h -e 'rname != "chrM" && rname != "MT"' - | \
+        samtools collate -u -O -@ {params.comp_threads} - | \
         samtools fixmate -m -u -@ {params.comp_threads} - - | \
         samtools sort -u -@ {params.comp_threads} -m {params.sort_mem} - | \
-        samtools markdup --write-index -s {output.stats} -@ {threads} - {output.bam} 
+        samtools markdup --write-index -f {output.stats} -@ {threads} - {output.bam} 
         """
 
 
