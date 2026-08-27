@@ -11,6 +11,7 @@ FASTP_OUT = f"{WORK_DIR}/fastp"
 BOWTIE2_OUT = f"{WORK_DIR}/bowtie2"
 GENRICH_OUT = f"{WORK_DIR}/genrich"
 BIGWIG_OUT = f"{WORK_DIR}/bg2bw"
+DEEPTOOLS_OUT = f"{WORK_DIR}/deeptools"
 MULTIQC_OUT = f"{WORK_DIR}/multiqc"
 
 
@@ -18,7 +19,9 @@ rule all:
     input:
         f"{MULTIQC_OUT}/multiqc_report.html",
         expand(f"{BIGWIG_OUT}/{{sample}}.bw", sample=SAMPLES_LIST),
-        expand(f"{GENRICH_OUT}/{{sample}}.narrowPeak", sample=SAMPLES_LIST)
+        expand(f"{GENRICH_OUT}/{{sample}}.narrowPeak", sample=SAMPLES_LIST),
+        expand(f"{DEEPTOOLS_OUT}/{{sample}}.profile.pdf", sample=SAMPLES_LIST),
+        expand(f"{DEEPTOOLS_OUT}/{{sample}}.fragSizes.pdf", sample=SAMPLES_LIST)
 
 
 rule fastp:
@@ -86,9 +89,11 @@ rule collate_bam:
         position_sorted = f"{BOWTIE2_OUT}/{{sample}}.sorted.bam"
     output:
         name_sorted = temp(f"{GENRICH_OUT}/{{sample}}.bam")
+    params: 
+        reads = 100000
     threads: 4
     shell:
-        "samtools collate -@ {threads} -o {output.name_sorted} {input.position_sorted}"
+        "samtools collate -r {params.reads} -@ {threads} -o {output.name_sorted} {input.position_sorted}"
 
 
 rule genrich:
@@ -135,6 +140,75 @@ rule bg2bw:
         chrom_sizes = config["bedgraph2bigwig"]["chrom_sizes"]
     shell:
         "bedGraphToBigWig {input.bedgraph} {params.chrom_sizes} {output.bw}"
+
+
+rule compute_matrix:
+    input:
+        bigwig = f"{BIGWIG_OUT}/{{sample}}.bw"
+    output:
+        mat = f"{DEEPTOOLS_OUT}/{{sample}}.tss.mat.gz"
+    params:
+        upstream = 3000,
+        downstream = 3000,
+        blacklist = config["deeptools"]["blacklist"],
+        gtf = config["deeptools"]["gtf"]
+    conda:
+        "deeptools"
+    shell:
+        """
+        computeMatrix reference-point \
+            --regionsFileName {params.gtf} \
+            --scoreFileName {input.bigwig} \
+            --outFileName {output.mat} \
+            --referencePoint TSS \
+            --beforeRegionStartLength {params.upstream} \
+            --afterRegionStartLength {params.downstream} \
+            --blackListFileName {params.blacklist} \
+            --skipZeros \
+            --missingDataAsZero \
+            --metagene \
+            --transcriptID gene \
+            --numberOfProcessors {threads}
+        """
+
+
+rule plot_profile:
+    input:
+        mat = f"{DEEPTOOLS_OUT}/{{sample}}.tss.mat.gz"
+    output:
+        pdf = f"{DEEPTOOLS_OUT}/{{sample}}.profile.pdf"
+    conda:
+        "deeptools"
+    shell:
+        """
+        plotProfile --matrixFile {input.mat} \
+            --outFileName {output.pdf} \
+            --plotTitle 'TSS enrichment' \
+            --plotFileFormat 'pdf'
+        """
+
+
+rule fragment_size:
+    input:
+        bam = f"{GENRICH_OUT}/{{sample}}.bam"
+    output:
+        pdf = f"{DEEPTOOLS_OUT}/{{sample}}.fragSizes.pdf"
+    params:
+        max_len = 2000,
+        blacklist = config["deeptools"]["blacklist"]
+    threads:
+        6
+    conda:
+        "deeptools"
+    shell:
+        """
+        bamPEFragmentSize --bamfiles {input.bam} \
+            --histogram {output.pdf} \
+            --plotFileFormat 'pdf' \
+            --numberOfProcessors {threads} \
+            --maxFragmentLength {params.max_len} \
+            --blackListFileName {params.blacklist}
+        """
 
 
 rule multiqc:
