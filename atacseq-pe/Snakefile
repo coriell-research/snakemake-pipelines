@@ -263,7 +263,8 @@ rule promoter_featurecounts:
         bam = f"{BOWTIE2_OUT}/{{sample}}.sorted.bam",
         saf = f"{FEATURECOUNTS_OUT}/promoters.saf"
     output:
-        counts = f"{FEATURECOUNTS_OUT}/{{sample}}.featurecounts.txt"
+        counts = f"{FEATURECOUNTS_OUT}/{{sample}}.featurecounts.txt",
+        summary = f"{FEATURECOUNTS_OUT}/{{sample}}.featurecounts.txt.summary"
     params:
         min_len = 0,
         max_len = 2000
