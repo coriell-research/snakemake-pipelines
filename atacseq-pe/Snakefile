@@ -12,6 +12,7 @@ BOWTIE2_OUT = f"{WORK_DIR}/bowtie2"
 GENRICH_OUT = f"{WORK_DIR}/genrich"
 BIGWIG_OUT = f"{WORK_DIR}/bg2bw"
 DEEPTOOLS_OUT = f"{WORK_DIR}/deeptools"
+FEATURECOUNTS_OUT = f"{WORK_DIR}/featurecounts"
 MULTIQC_OUT = f"{WORK_DIR}/multiqc"
 
 
@@ -21,7 +22,8 @@ rule all:
         expand(f"{BIGWIG_OUT}/{{sample}}.bw", sample=SAMPLES_LIST),
         expand(f"{GENRICH_OUT}/{{sample}}.narrowPeak", sample=SAMPLES_LIST),
         expand(f"{DEEPTOOLS_OUT}/{{sample}}.profile.pdf", sample=SAMPLES_LIST),
-        expand(f"{DEEPTOOLS_OUT}/{{sample}}.fragSizes.pdf", sample=SAMPLES_LIST)
+        expand(f"{DEEPTOOLS_OUT}/{{sample}}.fragSizes.pdf", sample=SAMPLES_LIST),
+        expand(f"{FEATURECOUNTS_OUT}/{{sample}}.featurecounts.txt", sample=SAMPLES_LIST)
 
 
 rule fastp:
@@ -190,7 +192,8 @@ rule plot_profile:
 
 rule fragment_size:
     input:
-        bam = f"{GENRICH_OUT}/{{sample}}.bam"
+        bam = f"{BOWTIE2_OUT}/{{sample}}.sorted.bam",
+        idx = f"{BOWTIE2_OUT}/{{sample}}.sorted.bam.csi"
     output:
         pdf = f"{DEEPTOOLS_OUT}/{{sample}}.fragSizes.pdf"
     params:
@@ -211,11 +214,85 @@ rule fragment_size:
         """
 
 
+rule promoter_saf:
+    input:
+        gtf = config["deeptools"]["gtf"] 
+    output:
+        saf = f"{FEATURECOUNTS_OUT}/promoters.saf"
+    params:
+        upstream = 2000, 
+        downstream = 2000
+    shell:
+        """
+        zcat {input.gtf} | awk -F'\t' '
+        BEGIN {{
+            OFS="\t"; 
+            # Print the required SAF header
+            print "GeneID", "Chr", "Start", "End", "Strand";
+            
+            up = {params.upstream};       # Base pairs upstream of TSS
+            down = {params.downstream};   # Base pairs downstream of TSS
+        }}
+        !/^#/ && $3 == "gene" {{
+            # Extract the gene_id from the attributes column ($9)
+            split($9, a, "gene_id \\""); 
+            split(a[2], b, "\\""); 
+            gene_id = b[1];
+            
+            # Calculate coordinates based on DNA strand
+            if ($7 == "+") {{
+                start = $4 - up; 
+                if (start < 1) start = 1; # Prevent negative coordinates
+                end = $4 + down;
+            }} else if ($7 == "-") {{
+                start = $5 - down; 
+                if (start < 1) start = 1;
+                end = $5 + up;
+            }} else {{
+                next; # Skip if strand is undefined
+            }}
+            
+            # Print in SAF format
+            print gene_id, $1, start, end, $7
+        }}' > {output.saf}
+        """
+
+
+rule promoter_featurecounts:
+    input:
+        bam = f"{BOWTIE2_OUT}/{{sample}}.sorted.bam",
+        saf = f"{FEATURECOUNTS_OUT}/promoters.saf"
+    output:
+        counts = f"{FEATURECOUNTS_OUT}/{{sample}}.featurecounts.txt"
+    params:
+        min_len = 0,
+        max_len = 2000
+    threads:
+        8
+    shell:
+        """
+        featureCounts \
+            -a {input.saf} \
+            -o {output.counts} \
+            -F 'SAF' \
+            -p \
+            -d {params.min_len} \
+            -D {params.max_len} \
+            --read2pos 5 \
+            -O \
+            --fraction \
+            --ignoreDup \
+            -T {threads} \
+            {input.bam}
+        """
+
+
 rule multiqc:
     input:
         expand(f"{FASTP_OUT}/{{sample}}.fastp.json", sample=SAMPLES_LIST),
         expand(f"{BOWTIE2_OUT}/{{sample}}.stats.txt", sample=SAMPLES_LIST),
-        expand(f"{GENRICH_OUT}/{{sample}}.narrowPeak", sample=SAMPLES_LIST)
+        expand(f"{GENRICH_OUT}/{{sample}}.narrowPeak", sample=SAMPLES_LIST),
+        expand(f"{FEATURECOUNTS_OUT}/{{sample}}.featurecounts.txt.summary", sample=SAMPLES_LIST)
     output:
         html_report = f"{MULTIQC_OUT}/multiqc_report.html",
         data_dir = directory(f"{MULTIQC_OUT}/multiqc_data")
