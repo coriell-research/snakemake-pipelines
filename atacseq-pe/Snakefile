@@ -168,8 +168,6 @@ rule compute_matrix:
             --blackListFileName {params.blacklist} \
             --skipZeros \
             --missingDataAsZero \
-            --metagene \
-            --transcriptID gene \
             --numberOfProcessors {threads}
         """
 
@@ -302,5 +300,7 @@ rule multiqc:
     params:
         search_dir = WORK_DIR,
         output_dir = MULTIQC_OUT
+    conda:
+        "multiqc"
     shell:
         "multiqc {params.search_dir} -o {params.output_dir} -f &> {log}"
