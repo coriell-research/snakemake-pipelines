@@ -23,6 +23,7 @@ rule all:
         expand(f"{GENRICH_OUT}/{{sample}}.narrowPeak", sample=SAMPLES_LIST),
         expand(f"{DEEPTOOLS_OUT}/{{sample}}.profile.pdf", sample=SAMPLES_LIST),
         expand(f"{DEEPTOOLS_OUT}/{{sample}}.fragSizes.pdf", sample=SAMPLES_LIST),
+        expand(f"{DEEPTOOLS_OUT}/{{sample}}.fragSizes.txt", sample=SAMPLES_LIST),
         expand(f"{FEATURECOUNTS_OUT}/{{sample}}.featurecounts.txt", sample=SAMPLES_LIST)
 
 
@@ -154,6 +155,8 @@ rule compute_matrix:
         downstream = 3000,
         blacklist = config["deeptools"]["blacklist"],
         gtf = config["deeptools"]["gtf"]
+    threads:
+        6
     conda:
         "deeptools"
     shell:
@@ -166,6 +169,8 @@ rule compute_matrix:
             --beforeRegionStartLength {params.upstream} \
             --afterRegionStartLength {params.downstream} \
             --blackListFileName {params.blacklist} \
+            --averageTypeBins 'median' \
+            --sortUsing 'median' \
             --skipZeros \
             --missingDataAsZero \
             --numberOfProcessors {threads}
@@ -193,7 +198,8 @@ rule fragment_size:
         bam = f"{BOWTIE2_OUT}/{{sample}}.sorted.bam",
         idx = f"{BOWTIE2_OUT}/{{sample}}.sorted.bam.csi"
     output:
-        pdf = f"{DEEPTOOLS_OUT}/{{sample}}.fragSizes.pdf"
+        pdf = f"{DEEPTOOLS_OUT}/{{sample}}.fragSizes.pdf",
+        raw = f"{DEEPTOOLS_OUT}/{{sample}}.fragSizes.txt"
     params:
         max_len = 2000,
         blacklist = config["deeptools"]["blacklist"]
@@ -206,6 +212,7 @@ rule fragment_size:
         bamPEFragmentSize --bamfiles {input.bam} \
             --histogram {output.pdf} \
             --plotFileFormat 'pdf' \
+            --outRawFragmentLengths {output.raw} \
             --numberOfProcessors {threads} \
             --maxFragmentLength {params.max_len} \
             --blackListFileName {params.blacklist}
