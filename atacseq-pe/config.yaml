@@ -16,3 +16,6 @@ bedgraph2bigwig:
 deeptools:
   blacklist: "/home/gennaro/data/references/GRCh38/GENCODE/v48/excluderanges.bed"
   gtf: "/home/gennaro/data/references/GRCh38/GENCODE/v48/gencode.v48.basic.annotation.gtf.gz"
+
+featurecounts:
+  promoters: "/home/gennaro/data/references/GRCh38/GENCODE/v48/gencode.v48.promoter_windows.gff3.gz"

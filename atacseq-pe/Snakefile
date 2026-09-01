@@ -219,68 +219,27 @@ rule fragment_size:
         """
 
 
-rule promoter_saf:
+rule featurecounts:
     input:
-        gtf = config["deeptools"]["gtf"] 
-    output:
-        saf = f"{FEATURECOUNTS_OUT}/promoters.saf"
-    params:
-        upstream = 2000, 
-        downstream = 2000
-    shell:
-        """
-        zcat {input.gtf} | awk -F'\t' '
-        BEGIN {{
-            OFS="\t"; 
-            # Print the required SAF header
-            print "GeneID", "Chr", "Start", "End", "Strand";
-            
-            up = {params.upstream};       # Base pairs upstream of TSS
-            down = {params.downstream};   # Base pairs downstream of TSS
-        }}
-        !/^#/ && $3 == "gene" {{
-            # Extract the gene_id from the attributes column ($9)
-            split($9, a, "gene_id \\""); 
-            split(a[2], b, "\\""); 
-            gene_id = b[1];
-            
-            # Calculate coordinates based on DNA strand
-            if ($7 == "+") {{
-                start = $4 - up; 
-                if (start < 1) start = 1; # Prevent negative coordinates
-                end = $4 + down;
-            }} else if ($7 == "-") {{
-                start = $5 - down; 
-                if (start < 1) start = 1;
-                end = $5 + up;
-            }} else {{
-                next; # Skip if strand is undefined
-            }}
-            
-            # Print in SAF format
-            print gene_id, $1, start, end, $7
-        }}' > {output.saf}
-        """
-
-
-rule promoter_featurecounts:
-    input:
-        bam = f"{BOWTIE2_OUT}/{{sample}}.sorted.bam",
-        saf = f"{FEATURECOUNTS_OUT}/promoters.saf"
+        bam = f"{BOWTIE2_OUT}/{{sample}}.sorted.bam"
     output:
         counts = f"{FEATURECOUNTS_OUT}/{{sample}}.featurecounts.txt",
         summary = f"{FEATURECOUNTS_OUT}/{{sample}}.featurecounts.txt.summary"
     params:
         min_len = 0,
-        max_len = 2000
+        max_len = 2000,
+        promoters = config["featurecounts"]["promoters"]
     threads:
         8
     shell:
         """
         featureCounts \
-            -a {input.saf} \
+            -a {params.promoters} \
             -o {output.counts} \
-            -F 'SAF' \
+            -F 'GTF' \
+            -t 'promoter_window' \
+            -g 'gene_id' \
+            --extraAttributes 'Name' \
             -p \
             -d {params.min_len} \
             -D {params.max_len} \
