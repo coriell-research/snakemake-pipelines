@@ -6,21 +6,27 @@ from snakemake.utils import validate
 configfile: "config.yaml"
 validate(config, "schemas/config.schema.yaml")
 
-SAMPLES = pd.read_csv("samples.csv", sep=",", header=0)
-validate(SAMPLES, "schemas/samples.schema.yaml")
+LANES = pd.read_csv("samples.csv", sep=",", header=0)
+validate(LANES, "schemas/samples.schema.yaml")
 
-if SAMPLES["sample_name"].duplicated().any():
-    dupes = sorted(set(SAMPLES.loc[SAMPLES["sample_name"].duplicated(), "sample_name"]))
-    raise WorkflowError(f"Duplicate sample_name(s) in samples.csv: {dupes}")
+LANE_KEY_COLS = ["sample_name", "read1", "read2"]
+if LANES.duplicated(subset=LANE_KEY_COLS).any():
+    dupes = LANES.loc[LANES.duplicated(subset=LANE_KEY_COLS), LANE_KEY_COLS].to_dict("records")
+    raise WorkflowError(
+        f"Duplicate lane entries in samples.csv (identical sample_name/read1/read2): {dupes}"
+    )
 
-for _, row in SAMPLES.iterrows():
+for _, row in LANES.iterrows():
     for col in ("read1", "read2"):
         if not os.path.isfile(row[col]):
             raise WorkflowError(f"{col} for sample '{row['sample_name']}' not found: {row[col]}")
 
-SAMPLES_LIST = SAMPLES["sample_name"].tolist()
+SAMPLES_LIST = LANES["sample_name"].drop_duplicates().tolist()
+LANE_R1 = LANES.groupby("sample_name")["read1"].apply(list).to_dict()
+LANE_R2 = LANES.groupby("sample_name")["read2"].apply(list).to_dict()
 
 WORK_DIR = "../data"
+MERGED_OUT = f"{WORK_DIR}/merged"
 FASTP_OUT = f"{WORK_DIR}/fastp"
 BOWTIE2_OUT = f"{WORK_DIR}/bowtie2"
 GENRICH_OUT = f"{WORK_DIR}/genrich"
@@ -28,6 +34,16 @@ BIGWIG_OUT = f"{WORK_DIR}/bg2bw"
 DEEPTOOLS_OUT = f"{WORK_DIR}/deeptools"
 FEATURECOUNTS_OUT = f"{WORK_DIR}/featurecounts"
 MULTIQC_OUT = f"{WORK_DIR}/multiqc"
+
+
+def fastp_input(lane_paths, mate):
+    def _input(wildcards):
+        sample_lanes = lane_paths[wildcards.sample]
+        if len(sample_lanes) == 1:
+            return sample_lanes[0]
+        return f"{MERGED_OUT}/{wildcards.sample}.merged.{mate}.fq.gz"
+
+    return _input
 
 
 rule all:
@@ -41,10 +57,26 @@ rule all:
         expand(f"{FEATURECOUNTS_OUT}/{{sample}}.featurecounts.txt", sample=SAMPLES_LIST)
 
 
+rule merge_lanes:
+    input:
+        r1 = lambda w: LANE_R1[w.sample],
+        r2 = lambda w: LANE_R2[w.sample]
+    output:
+        r1_out = temp(f"{MERGED_OUT}/{{sample}}.merged.1.fq.gz"),
+        r2_out = temp(f"{MERGED_OUT}/{{sample}}.merged.2.fq.gz")
+    log:
+        f"{MERGED_OUT}/{{sample}}_merge_lanes.log"
+    shell:
+        """
+        cat {input.r1} > {output.r1_out} 2> {log}
+        cat {input.r2} > {output.r2_out} 2>> {log}
+        """
+
+
 rule fastp:
     input:
-        r1 = lambda w: SAMPLES.loc[SAMPLES["sample_name"] == w.sample, "read1"].values[0],
-        r2 = lambda w: SAMPLES.loc[SAMPLES["sample_name"] == w.sample, "read2"].values[0]
+        r1 = fastp_input(LANE_R1, 1),
+        r2 = fastp_input(LANE_R2, 2)
     output:
         r1_out = temp(f"{FASTP_OUT}/{{sample}}.trimmed.1.fq.gz"),
         r2_out = temp(f"{FASTP_OUT}/{{sample}}.trimmed.2.fq.gz"),
