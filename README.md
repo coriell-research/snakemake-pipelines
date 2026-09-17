@@ -5,14 +5,16 @@
 ## Current Workflows:
 
 - Paired-end RNA-seq processing and quantification
-- PAired-end ATAC-seq processing and peak calling with Genrich
+- Paired-end ATAC-seq processing, peak calling with Genrich, and promoter abundance estimation
+- Paired-end RRBS processing, methylation calling, and extraction
 - De novo transcript assembly and quantification
-- Somatic variant calling from tumor-normal WES/WGS data
 - Estimation of bacterial read abundance from sequencing data using Kraken2 and Braken
+- Somatic variant calling from tumor-normal WES/WGS data (work-in-progress)
 
 ## Caveats
 
 All of the workflows assume you're working on Coriell's bioinformatics servers which means
-software environments and paths to pre-generated genome indeces and system resources will not
-work on your machine. 
-
+paths to pre-generated genome indeces and system resources will not work on your machine. I have 
+tried to keep these workflows as simple as possible. Most take only a single samples.csv file
+as input and generate opinionated sets of output files. Modify the config.yaml files with the 
+desired paths to your own pre-generated genome indeces. 
