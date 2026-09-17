@@ -29,9 +29,3 @@ changed by editing the Snakefile).
 2. `Bowtie2` alignment with bowtie2 -> fixmate -> markdup -> position sorted BAMs
 3. `Genrich` peak calling in ATAC-seq mode
 4. `bedGraphToBigWig` to create raw signal files from Genrich bedGraph-ish output
-
-### TODO
-
-- Add additional peak callers
-- Allow for consensus calling across replicates
-- `deeptools` normalized BAM coverage and computeMatrix integration

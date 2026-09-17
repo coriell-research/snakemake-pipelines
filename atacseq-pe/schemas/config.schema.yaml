@@ -1,0 +1,72 @@
+$schema: "https://json-schema.org/draft/2020-12/schema"
+description: Schema for atacseq-pe config.yaml
+type: object
+additionalProperties: false
+required:
+  - bowtie2
+  - genrich
+  - bedgraph2bigwig
+  - deeptools
+  - featurecounts
+properties:
+  fastp:
+    type: object
+    additionalProperties: false
+    properties:
+      extra_params:
+        type: string
+
+  bowtie2:
+    type: object
+    additionalProperties: false
+    required: [idx, max_insert, flags]
+    properties:
+      idx:
+        type: string
+        minLength: 1
+      max_insert:
+        type: integer
+        minimum: 1
+      flags:
+        type: string
+
+  genrich:
+    type: object
+    additionalProperties: false
+    required: [blacklist, flags]
+    properties:
+      blacklist:
+        type: string
+        minLength: 1
+      flags:
+        type: string
+
+  bedgraph2bigwig:
+    type: object
+    additionalProperties: false
+    required: [chrom_sizes]
+    properties:
+      chrom_sizes:
+        type: string
+        minLength: 1
+
+  deeptools:
+    type: object
+    additionalProperties: false
+    required: [blacklist, gtf]
+    properties:
+      blacklist:
+        type: string
+        minLength: 1
+      gtf:
+        type: string
+        minLength: 1
+
+  featurecounts:
+    type: object
+    additionalProperties: false
+    required: [promoters]
+    properties:
+      promoters:
+        type: string
+        minLength: 1
