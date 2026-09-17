@@ -7,21 +7,30 @@ configfile: "config.yaml"
 validate(config, "schemas/config.schema.yaml")
 
 
-SAMPLES = pd.read_csv("samples.csv", sep=",").set_index("sample_name", drop=False)
-validate(SAMPLES, "schemas/samples.schema.yaml")
+LANES = pd.read_csv("samples.csv", sep=",")
+validate(LANES, "schemas/samples.schema.yaml")
 
-if SAMPLES.index.duplicated().any():
-    dupes = sorted(set(SAMPLES.index[SAMPLES.index.duplicated()]))
-    raise WorkflowError(f"Duplicate sample_name(s) in samples.csv: {dupes}")
+LANE_KEY_COLS = ["sample_name", "read1", "read2"]
+if LANES.duplicated(subset=LANE_KEY_COLS).any():
+    dupes = LANES.loc[LANES.duplicated(subset=LANE_KEY_COLS), LANE_KEY_COLS].to_dict("records")
+    raise WorkflowError(
+        f"Duplicate lane entries in samples.csv (identical sample_name/read1/read2): {dupes}"
+    )
 
-for sample, row in SAMPLES.iterrows():
+for _, row in LANES.iterrows():
     for col in ("read1", "read2"):
         if not os.path.isfile(row[col]):
-            raise WorkflowError(f"{col} for sample '{sample}' not found: {row[col]}")
+            raise WorkflowError(f"{col} for sample '{row['sample_name']}' not found: {row[col]}")
 
-SAMPLES_LIST = SAMPLES.index.tolist()
+# one or more rows per sample_name are allowed (one row per lane); lanes are
+# merged per-sample by rule merge_lanes before any trimming/alignment happens.
+# samples with only one lane skip merge_lanes entirely (see fastp_input below).
+SAMPLES_LIST = LANES["sample_name"].drop_duplicates().tolist()
+LANE_R1 = LANES.groupby("sample_name")["read1"].apply(list).to_dict()
+LANE_R2 = LANES.groupby("sample_name")["read2"].apply(list).to_dict()
 
 WORK_DIR = config.get("work_dir", "../data")
+MERGED_OUT = f"{WORK_DIR}/merged"
 FASTP_OUT = f"{WORK_DIR}/fastp"
 STAR_OUT = f"{WORK_DIR}/star"
 SALMON_OUT = f"{WORK_DIR}/salmon"
@@ -31,15 +40,41 @@ MULTIQC_OUT = f"{WORK_DIR}/multiqc"
 LOG_DIR = f"{WORK_DIR}/logs"
 
 
+def fastp_input(lane_paths, mate):
+    def _input(wildcards):
+        sample_lanes = lane_paths[wildcards.sample]
+        if len(sample_lanes) == 1:
+            return sample_lanes[0]
+        return f"{MERGED_OUT}/{wildcards.sample}.merged.{mate}.fq.gz"
+
+    return _input
+
+
 rule all:
     input:
         f"{MULTIQC_OUT}/multiqc_report.html"
 
 
+rule merge_lanes:
+    input:
+        r1 = lambda w: LANE_R1[w.sample],
+        r2 = lambda w: LANE_R2[w.sample]
+    output:
+        r1_out = temp(f"{MERGED_OUT}/{{sample}}.merged.1.fq.gz"),
+        r2_out = temp(f"{MERGED_OUT}/{{sample}}.merged.2.fq.gz")
+    log:
+        f"{LOG_DIR}/merge_lanes/{{sample}}.log"
+    shell:
+        """
+        cat {input.r1} > {output.r1_out} 2> {log}
+        cat {input.r2} > {output.r2_out} 2>> {log}
+        """
+
+
 rule fastp:
     input:
-        r1 = lambda w: SAMPLES.loc[w.sample, "read1"],
-        r2 = lambda w: SAMPLES.loc[w.sample, "read2"]
+        r1 = fastp_input(LANE_R1, 1),
+        r2 = fastp_input(LANE_R2, 2)
     output:
         r1_out = temp(f"{FASTP_OUT}/{{sample}}.trimmed.1.fq.gz"),
         r2_out = temp(f"{FASTP_OUT}/{{sample}}.trimmed.2.fq.gz"),
