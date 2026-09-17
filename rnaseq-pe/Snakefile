@@ -1,10 +1,24 @@
 import os
 import pandas as pd
+from snakemake.exceptions import WorkflowError
+from snakemake.utils import validate
 
 configfile: "config.yaml"
+validate(config, "schemas/config.schema.yaml")
 
 
 SAMPLES = pd.read_csv("samples.csv", sep=",").set_index("sample_name", drop=False)
+validate(SAMPLES, "schemas/samples.schema.yaml")
+
+if SAMPLES.index.duplicated().any():
+    dupes = sorted(set(SAMPLES.index[SAMPLES.index.duplicated()]))
+    raise WorkflowError(f"Duplicate sample_name(s) in samples.csv: {dupes}")
+
+for sample, row in SAMPLES.iterrows():
+    for col in ("read1", "read2"):
+        if not os.path.isfile(row[col]):
+            raise WorkflowError(f"{col} for sample '{sample}' not found: {row[col]}")
+
 SAMPLES_LIST = SAMPLES.index.tolist()
 
 WORK_DIR = config.get("work_dir", "../data")

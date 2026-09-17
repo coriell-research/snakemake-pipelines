@@ -1,0 +1,180 @@
+$schema: "https://json-schema.org/draft/2020-12/schema"
+description: Schema for rnaseq-pe config.yaml
+type: object
+additionalProperties: false
+required:
+  - fastp
+  - star
+  - salmon
+  - rustqc
+  - mosdepth
+properties:
+  work_dir:
+    type: string
+
+  threads:
+    type: object
+    additionalProperties: false
+    properties:
+      fastp:
+        type: integer
+        minimum: 1
+      star:
+        type: integer
+        minimum: 1
+      salmon:
+        type: integer
+        minimum: 1
+      mosdepth:
+        type: integer
+        minimum: 1
+      rustqc:
+        type: integer
+        minimum: 1
+
+  fastp:
+    type: object
+    additionalProperties: false
+    required: [extra_params]
+    properties:
+      threads:
+        type: integer
+        minimum: 1
+      extra_params:
+        type: string
+
+  star:
+    type: object
+    additionalProperties: false
+    required:
+      - index_dir
+      - readFilesCommand
+      - twopassMode
+      - outFilterMultimapNmax
+      - winAnchorMultimapNmax
+      - alignSJoverhangMin
+      - alignSJDBoverhangMin
+      - outFilterMismatchNmax
+      - outFilterMismatchNoverLmax
+      - alignIntronMin
+      - alignIntronMax
+      - alignMatesGapMax
+      - outFilterScoreMinOverLread
+      - outFilterMatchNminOverLread
+      - limitSjdbInsertNsj
+      - outSAMstrandField
+      - quantMode
+      - outSAMtype
+      - outSAMattributes
+    properties:
+      threads:
+        type: integer
+        minimum: 1
+      index_dir:
+        type: string
+        minLength: 1
+      readFilesCommand:
+        type: string
+      twopassMode:
+        type: string
+        enum: ["Basic", "None"]
+      outFilterMultimapNmax:
+        type: integer
+        minimum: 1
+      winAnchorMultimapNmax:
+        type: integer
+        minimum: 1
+      alignSJoverhangMin:
+        type: integer
+        minimum: 1
+      alignSJDBoverhangMin:
+        type: integer
+        minimum: 1
+      outFilterMismatchNmax:
+        type: integer
+        minimum: 0
+      outFilterMismatchNoverLmax:
+        type: number
+        minimum: 0
+        maximum: 1
+      alignIntronMin:
+        type: integer
+        minimum: 1
+      alignIntronMax:
+        type: integer
+        minimum: 0
+      alignMatesGapMax:
+        type: integer
+        minimum: 0
+      outFilterScoreMinOverLread:
+        type: number
+        minimum: 0
+        maximum: 1
+      outFilterMatchNminOverLread:
+        type: number
+        minimum: 0
+        maximum: 1
+      limitSjdbInsertNsj:
+        type: integer
+        minimum: 0
+      outSAMstrandField:
+        type: string
+      quantMode:
+        type: string
+      outSAMtype:
+        type: string
+      outSAMattributes:
+        type: string
+
+  salmon:
+    type: object
+    additionalProperties: false
+    required: [index_dir, lib_type, gibbs, extra_params]
+    properties:
+      threads:
+        type: integer
+        minimum: 1
+      index_dir:
+        type: string
+        minLength: 1
+      lib_type:
+        type: string
+      gibbs:
+        type: integer
+        minimum: 0
+      extra_params:
+        type: string
+
+  rustqc:
+    type: object
+    additionalProperties: false
+    required: [gtf, biotype, stranded]
+    properties:
+      threads:
+        type: integer
+        minimum: 1
+      gtf:
+        type: string
+        minLength: 1
+      biotype:
+        type: string
+      stranded:
+        type: string
+        enum: ["forward", "reverse", "unstranded"]
+
+  mosdepth:
+    type: object
+    additionalProperties: false
+    required: [window_size, include_flag, extra_params]
+    properties:
+      threads:
+        type: integer
+        minimum: 1
+      window_size:
+        type: integer
+        minimum: 1
+      include_flag:
+        type: integer
+        minimum: 0
+      extra_params:
+        type: string
