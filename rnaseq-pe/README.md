@@ -4,9 +4,10 @@ This a simple snakemake pipeline for aligning and performing QC on paired-end RN
 
 **This workflow does not account for samples from multiple lanes at the moment**. If you have 
 samples split across multiple lanes you can concatenate them prior to running this pipeline. The 
-pipeline also assumes that you are running it on Coriell's server, meaning dependencies are not 
-resolved by the workflow itself and paths to pre-generated genome indeces are available. As such,
-ensure `Salmon`, `STAR`, `fastp`, `mosdepth` and `rustqc` are installed and available on your path.  
+pipeline also assumes that you are running it on Coriell's server, meaning paths to pre-generated 
+genome indeces are available. Each rule resolves its own tool (`fastp`, `STAR`, `Salmon`, `mosdepth`, 
+`rustqc`, `MultiQC`) via a pinned conda environment in `envs/`, built automatically by Snakemake 
+when run with `--use-conda`.
 
 ### Usage
 
