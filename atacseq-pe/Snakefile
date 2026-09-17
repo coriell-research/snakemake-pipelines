@@ -50,7 +50,6 @@ rule all:
     input:
         f"{MULTIQC_OUT}/multiqc_report.html",
         expand(f"{BIGWIG_OUT}/{{sample}}.bw", sample=SAMPLES_LIST),
-        expand(f"{GENRICH_OUT}/{{sample}}.narrowPeak", sample=SAMPLES_LIST),
         expand(f"{DEEPTOOLS_OUT}/{{sample}}.profile.pdf", sample=SAMPLES_LIST),
         expand(f"{DEEPTOOLS_OUT}/{{sample}}.fragSizes.pdf", sample=SAMPLES_LIST),
         expand(f"{DEEPTOOLS_OUT}/{{sample}}.fragSizes.txt", sample=SAMPLES_LIST),
@@ -259,7 +258,7 @@ rule fragment_size:
         pdf = f"{DEEPTOOLS_OUT}/{{sample}}.fragSizes.pdf",
         raw = f"{DEEPTOOLS_OUT}/{{sample}}.fragSizes.txt"
     params:
-        max_len = 2000,
+        max_len = config["bowtie2"]["max_insert"],
         blacklist = config["deeptools"]["blacklist"]
     threads:
         6
@@ -285,7 +284,7 @@ rule featurecounts:
         summary = f"{FEATURECOUNTS_OUT}/{{sample}}.featurecounts.txt.summary"
     params:
         min_len = 0,
-        max_len = 2000,
+        max_len = config["bowtie2"]["max_insert"],
         promoters = config["featurecounts"]["promoters"]
     threads:
         8
