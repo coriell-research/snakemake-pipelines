@@ -41,6 +41,8 @@ rule fastp:
     params:
         extra = config.get("fastp", {}).get("extra_params", "")
     threads: 8
+    conda:
+        "envs/fastp.yaml"
     shell:
         """
         fastp -i {input.r1} \
@@ -71,6 +73,8 @@ rule bowtie2:
         flags = config["bowtie2"]["flags"],
         sort_mem = "4G",
         comp_threads = 4
+    conda:
+        "envs/bowtie2.yaml"
     shell:
         """
         bowtie2 -x {params.idx} \
@@ -92,9 +96,11 @@ rule collate_bam:
         position_sorted = f"{BOWTIE2_OUT}/{{sample}}.sorted.bam"
     output:
         name_sorted = temp(f"{GENRICH_OUT}/{{sample}}.bam")
-    params: 
+    params:
         reads = 100000
     threads: 4
+    conda:
+        "envs/samtools.yaml"
     shell:
         "samtools collate -r {params.reads} -@ {threads} -o {output.name_sorted} {input.position_sorted}"
 
@@ -109,6 +115,8 @@ rule genrich:
     params:
          blacklist = config["genrich"]["blacklist"],
          flags = config["genrich"]["flags"]
+    conda:
+        "envs/genrich.yaml"
     shell:
         """
         Genrich \
@@ -127,6 +135,8 @@ rule pileup2bedgraph:
         pileup = f"{GENRICH_OUT}/{{sample}}.pileup.txt"
     output:
         bedgraph = temp(f"{BIGWIG_OUT}/{{sample}}.bedGraph")
+    conda:
+        "envs/gawk.yaml"
     shell:
         """
         awk 'NR > 2 {{ print $1, $2, $3, $4 }}' {input.pileup} | \
@@ -141,6 +151,8 @@ rule bg2bw:
         bw = f"{BIGWIG_OUT}/{{sample}}.bw"
     params:
         chrom_sizes = config["bedgraph2bigwig"]["chrom_sizes"]
+    conda:
+        "envs/bedgraphtobigwig.yaml"
     shell:
         "bedGraphToBigWig {input.bedgraph} {params.chrom_sizes} {output.bw}"
 
@@ -158,7 +170,7 @@ rule compute_matrix:
     threads:
         6
     conda:
-        "deeptools"
+        "envs/deeptools.yaml"
     shell:
         """
         computeMatrix reference-point \
@@ -183,7 +195,7 @@ rule plot_profile:
     output:
         pdf = f"{DEEPTOOLS_OUT}/{{sample}}.profile.pdf"
     conda:
-        "deeptools"
+        "envs/deeptools.yaml"
     shell:
         """
         plotProfile --matrixFile {input.mat} \
@@ -206,7 +218,7 @@ rule fragment_size:
     threads:
         6
     conda:
-        "deeptools"
+        "envs/deeptools.yaml"
     shell:
         """
         bamPEFragmentSize --bamfiles {input.bam} \
@@ -231,6 +243,8 @@ rule featurecounts:
         promoters = config["featurecounts"]["promoters"]
     threads:
         8
+    conda:
+        "envs/subread.yaml"
     shell:
         """
         featureCounts \
@@ -267,6 +281,6 @@ rule multiqc:
         search_dir = WORK_DIR,
         output_dir = MULTIQC_OUT
     conda:
-        "multiqc"
+        "envs/multiqc.yaml"
     shell:
         "multiqc {params.search_dir} -o {params.output_dir} -f &> {log}"
