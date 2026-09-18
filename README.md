@@ -2,8 +2,11 @@
 
 # `snakemake` workflows developed for Coriell Bioinformatics 
 
+For full tranparency, I have used Claude for code assistance in the development of these workflows. 
+
 ## Current Workflows:
 
+- Genome generation: A single workflow for generating pre-computed genome indeces and genomic resources
 - Paired-end RNA-seq processing and quantification
 - Paired-end ATAC-seq processing, peak calling with Genrich, and promoter abundance estimation
 - Paired-end RRBS processing, methylation calling, and extraction

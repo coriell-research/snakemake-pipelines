@@ -1,0 +1,7 @@
+channels:
+  - bioconda
+  - conda-forge
+dependencies:
+  # must match atacseq-pe/envs/bowtie2.yaml exactly - atacseq-pe aligns
+  # against the index this rule builds.
+  - bowtie2=2.5.3

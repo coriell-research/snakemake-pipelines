@@ -1,0 +1,7 @@
+channels:
+  - bioconda
+  - conda-forge
+dependencies:
+  # no other pipeline in this repo currently consumes an minimap2 index, so
+  # this is pinned to the newest bioconda release.
+  - minimap2=2.31

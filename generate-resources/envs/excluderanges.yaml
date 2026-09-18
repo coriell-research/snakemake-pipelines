@@ -1,0 +1,6 @@
+channels:
+  - bioconda
+  - conda-forge
+dependencies:
+  - bioconductor-genomicranges=1.62.1
+  - bioconductor-annotationhub=4.0.0

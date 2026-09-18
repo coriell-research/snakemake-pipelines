@@ -1,0 +1,10 @@
+channels:
+  - bioconda
+  - conda-forge
+dependencies:
+  # must match rnaseq-pe/envs/salmon.yaml exactly - the index this rule builds
+  # is read directly by rnaseq-pe's salmon quant step, and index compatibility
+  # across salmon versions isn't guaranteed. Bioconda's newest salmon release
+  # (2.x) is a Rust rewrite of the tool, so this is deliberately NOT pinned to
+  # the newest available version - bump both envs together if you upgrade.
+  - salmon=1.10.0
