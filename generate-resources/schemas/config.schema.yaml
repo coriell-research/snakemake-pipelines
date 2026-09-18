@@ -45,9 +45,9 @@ properties:
       excluderanges:
         type: object
         additionalProperties: false
-        required: [annotationhub_id]
+        required: [bed_url]
         properties:
-          annotationhub_id:
+          bed_url:
             type: string
 
   mouse:
@@ -58,7 +58,7 @@ properties:
       m38:
         type: object
         additionalProperties: false
-        required: [assembly, release, urls]
+        required: [assembly, release, urls, star, excluderanges]
         properties:
           assembly:
             type: string
@@ -75,10 +75,25 @@ properties:
                 type: string
               genome_fa:
                 type: string
+          star:
+            type: object
+            additionalProperties: false
+            required: [sjdb_overhang]
+            properties:
+              sjdb_overhang:
+                type: integer
+                minimum: 1
+          excluderanges:
+            type: object
+            additionalProperties: false
+            required: [bed_url]
+            properties:
+              bed_url:
+                type: string
       m25:
         type: object
         additionalProperties: false
-        required: [assembly, release, urls]
+        required: [assembly, release, urls, star, excluderanges]
         properties:
           assembly:
             type: string
@@ -87,14 +102,7 @@ properties:
           urls:
             type: object
             additionalProperties: false
-            required:
-              - annotation_gtf
-              - transcripts_fa
-              - genome_fa
-              - rseqc_basic_bed
-              - rseqc_comprehensive_bed
-              - rseqc_ucsc_knowngene_bed
-              - rseqc_housekeeping_bed
+            required: [annotation_gtf, transcripts_fa, genome_fa]
             properties:
               annotation_gtf:
                 type: string
@@ -102,27 +110,34 @@ properties:
                 type: string
               genome_fa:
                 type: string
-              rseqc_basic_bed:
-                type: string
-              rseqc_comprehensive_bed:
-                type: string
-              rseqc_ucsc_knowngene_bed:
-                type: string
-              rseqc_housekeeping_bed:
+          star:
+            type: object
+            additionalProperties: false
+            required: [sjdb_overhang]
+            properties:
+              sjdb_overhang:
+                type: integer
+                minimum: 1
+          excluderanges:
+            type: object
+            additionalProperties: false
+            required: [bed_url]
+            properties:
+              bed_url:
                 type: string
 
   spike_ins:
     type: object
     additionalProperties: false
-    required: [ercc_fasta, gfp_fasta, lambda_fasta_gz]
+    required: [ercc_url, gfp_url, lambda_url]
     properties:
-      ercc_fasta:
+      ercc_url:
         type: string
         minLength: 1
-      gfp_fasta:
+      gfp_url:
         type: string
         minLength: 1
-      lambda_fasta_gz:
+      lambda_url:
         type: string
         minLength: 1
 

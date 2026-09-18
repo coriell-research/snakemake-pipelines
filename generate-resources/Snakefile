@@ -1,131 +1,130 @@
-import os
 import re
-from snakemake.exceptions import WorkflowError
 from snakemake.utils import validate
+
 
 configfile: "config.yaml"
 validate(config, "schemas/config.schema.yaml")
 
+
 RESOURCES_DIR = config["resources_dir"]
-HUMAN = config["human"]
-MOUSE_M38 = config["mouse"]["m38"]
-MOUSE_M25 = config["mouse"]["m25"]
 SPIKE_INS = config["spike_ins"]
-
-for _key in ("ercc_fasta", "gfp_fasta", "lambda_fasta_gz"):
-    if not os.path.isfile(SPIKE_INS[_key]):
-        raise WorkflowError(
-            f"config['spike_ins']['{_key}'] not found: {SPIKE_INS[_key]}"
-        )
-
 LOG_DIR = "logs"
 
 
 def basename_of(url):
     return url.rsplit("/", 1)[-1]
 
-
-# Registry for the generic `download` rule below: maps an absolute output
-# path to the URL it's fetched from. Populated as each species' paths are
-# built up, so every plain "fetch this URL to this path" step (GENCODE
-# annotation/transcript/genome files, rseqc BED files) shares one rule
-# instead of one bespoke rule per file.
 DOWNLOADS = {}
-
-
 def register(path, url):
     DOWNLOADS[path] = url
     return path
 
+DECOMPRESS_MAP = {}
+def register_decompress(gz_path):
+    plain_path = gz_path[: -len(".gz")]
+    DECOMPRESS_MAP[plain_path] = gz_path
+    return plain_path
+
 
 # ---------------------------------------------------------------------------
-# Human (GRCh38, GENCODE release configured via human.release)
+# Species registry: builds one entry per GENCODE build (human GRCh38, mouse
+# GRCm39/M38, mouse GRCm38/M25) from its config block, registering downloads/
+# decompressions as it goes. Directory and genome-stem naming is uniform
+# across all three builds ("<assembly>.primary_assembly.genome[.fa[.gz]]"
+# under "<resources_dir>/<assembly>/GENCODE/<release>/..."), so the index-
+# build rules below are written once and parameterized over {assembly}/
+# {release} wildcards rather than duplicated per species.
 # ---------------------------------------------------------------------------
-HUMAN_DIR = f"{RESOURCES_DIR}/{HUMAN['assembly']}/GENCODE/{HUMAN['release']}"
+SPECIES = {}
+EXTRA_TARGETS = []  # non-index downloads not shared by all species, e.g. human promoter windows
 
-HUMAN_ANNOTATION_GTF_GZ = register(
-    f"{HUMAN_DIR}/{basename_of(HUMAN['urls']['annotation_gtf'])}", HUMAN["urls"]["annotation_gtf"]
-)
-HUMAN_PROMOTER_WINDOWS_GZ = register(
-    f"{HUMAN_DIR}/{basename_of(HUMAN['urls']['promoter_windows'])}", HUMAN["urls"]["promoter_windows"]
-)
-HUMAN_TRANSCRIPTS_FA_GZ = register(
-    f"{HUMAN_DIR}/{basename_of(HUMAN['urls']['transcripts_fa'])}", HUMAN["urls"]["transcripts_fa"]
-)
-HUMAN_GENOME_FA_GZ = register(
-    f"{HUMAN_DIR}/{basename_of(HUMAN['urls']['genome_fa'])}", HUMAN["urls"]["genome_fa"]
-)
 
-# Decompressed names, derived from the downloaded .gz basenames (e.g.
-# "GRCh38.primary_assembly.genome.fa.gz" -> "GRCh38.primary_assembly.genome.fa").
-# These plain-text copies are only needed transiently to build indices - per
-# instructions.md's own note, the persisted copies stay gzipped - so the
-# decompress_* rules below mark them temp() and write them into HUMAN_DIR
-# alongside the .gz. (temp() is applied at the producing rule's `output:`,
-# not here, since Snakemake rejects a temp()-flagged path used as an input.)
-HUMAN_ANNOTATION_GTF = HUMAN_ANNOTATION_GTF_GZ[: -len(".gz")]
-HUMAN_TRANSCRIPTS_FA = HUMAN_TRANSCRIPTS_FA_GZ[: -len(".gz")]
-HUMAN_GENOME_FA = HUMAN_GENOME_FA_GZ[: -len(".gz")]
+def build_species(cfg):
+    assembly = cfg["assembly"]
+    release = cfg["release"]
+    urls = cfg["urls"]
+    species_dir = f"{RESOURCES_DIR}/{assembly}/GENCODE/{release}"
 
-# "GRCh38.primary_assembly.genome" - the stem instructions.md uses as an
-# index/output prefix in several places (bt2_idx, bwa-mem2_idx, mm2_idx, ...).
-HUMAN_GENOME_STEM = basename_of(HUMAN["urls"]["genome_fa"])[: -len(".fa.gz")]
+    genome_fa_gz = register(f"{species_dir}/{basename_of(urls['genome_fa'])}", urls["genome_fa"])
+    annotation_gtf_gz = register(f"{species_dir}/{basename_of(urls['annotation_gtf'])}", urls["annotation_gtf"])
+    transcripts_fa_gz = register(f"{species_dir}/{basename_of(urls['transcripts_fa'])}", urls["transcripts_fa"])
 
-STAR_IDX_DIR = f"{HUMAN_DIR}/STAR_idx"
-BOWTIE2_IDX_DIR = f"{HUMAN_DIR}/bt2_idx"
-BWA_MEM2_IDX_DIR = f"{HUMAN_DIR}/bwa-mem2_idx"
-SALMON_IDX_DIR = f"{HUMAN_DIR}/salmon_idx"
-MINIMAP2_IDX_DIR = f"{HUMAN_DIR}/mm2_idx"
-BISMARK_IDX_DIR = f"{HUMAN_DIR}/bismark_idx"
-BWAMETH_IDX_DIR = f"{HUMAN_DIR}/bwa-meth_idx"
-MINIBWA_IDX_DIR = f"{HUMAN_DIR}/minibwa_idx"
+    for key, url in urls.items():
+        if key not in ("genome_fa", "annotation_gtf", "transcripts_fa"):
+            EXTRA_TARGETS.append(register(f"{species_dir}/{basename_of(url)}", url))
+
+    register_decompress(register(f"{species_dir}/excluderanges.bed.gz", cfg["excluderanges"]["bed_url"]))
+
+    SPECIES[assembly] = {
+        "release": release,
+        "dir": species_dir,
+        "genome_fa_gz": genome_fa_gz,
+        "genome_fa": register_decompress(genome_fa_gz),
+        "annotation_gtf": register_decompress(annotation_gtf_gz),
+        "transcripts_fa": register_decompress(transcripts_fa_gz),
+        "star_sjdb_overhang": cfg["star"]["sjdb_overhang"],
+    }
+
+
+build_species(config["human"])
+build_species(config["mouse"]["m38"])
+build_species(config["mouse"]["m25"])
+
+wildcard_constraints:
+    assembly = "|".join(re.escape(a) for a in SPECIES),
+    release = "|".join(re.escape(s["release"]) for s in SPECIES.values())
+
+SPECIES_DIR_T = f"{RESOURCES_DIR}/{{assembly}}/GENCODE/{{release}}"
+GENOME_STEM_T = "{assembly}.primary_assembly.genome"
+GENOME_FA_T = f"{SPECIES_DIR_T}/{GENOME_STEM_T}.fa"
+WITH_SPIKES_FA_T = f"{SPECIES_DIR_T}/{GENOME_STEM_T}.with_spikes.fa"
+STAR_IDX_T = f"{SPECIES_DIR_T}/STAR_idx"
+BOWTIE2_PREFIX_T = f"{SPECIES_DIR_T}/bt2_idx/{GENOME_STEM_T}"
+BWA_MEM2_PREFIX_T = f"{SPECIES_DIR_T}/bwa-mem2_idx/{GENOME_STEM_T}"
+SALMON_IDX_T = f"{SPECIES_DIR_T}/salmon_idx"
+MINIMAP2_MMI_T = f"{SPECIES_DIR_T}/mm2_idx/{GENOME_STEM_T}.mmi"
+BISMARK_IDX_T = f"{SPECIES_DIR_T}/bismark_idx"
+BWAMETH_PREFIX_T = f"{SPECIES_DIR_T}/bwa-meth_idx/{GENOME_STEM_T}.fa.gz.bwameth.c2t"
+MINIBWA_PREFIX_T = f"{SPECIES_DIR_T}/minibwa_idx/{GENOME_STEM_T}.fa"
+EXCLUDERANGES_BED_T = f"{SPECIES_DIR_T}/excluderanges.bed"
+CHROM_SIZES_T = f"{SPECIES_DIR_T}/{GENOME_STEM_T}.fa.chrom_sizes"
 
 # ---------------------------------------------------------------------------
-# Spike-in / decoy sequences - existing local files (see config.yaml)
+# Spike-in / decoy sequences, downloaded from this repo's own
+# generate-resources/data/ directory (see config.yaml). ERCC/GFP are used as
+# plain FASTA by the index rules below, so they're decompressed like the
+# genome/annotation/transcripts; the lambda genome is only ever consumed
+# gzipped (by bismark_index/bwameth_index), so it isn't.
 # ---------------------------------------------------------------------------
-ERCC_FA = SPIKE_INS["ercc_fasta"]
-GFP_FA = SPIKE_INS["gfp_fasta"]
-LAMBDA_FA_GZ = SPIKE_INS["lambda_fasta_gz"]
+SPIKE_DIR = f"{RESOURCES_DIR}/spike_ins"
 
-# ---------------------------------------------------------------------------
-# Mouse (download-only - instructions.md doesn't specify mouse index builds)
-# ---------------------------------------------------------------------------
-MOUSE_M38_DIR = f"{RESOURCES_DIR}/{MOUSE_M38['assembly']}/GENCODE/{MOUSE_M38['release']}"
-MOUSE_M38_TARGETS = [
-    register(f"{MOUSE_M38_DIR}/{basename_of(url)}", url) for url in MOUSE_M38["urls"].values()
-]
+ERCC_FA_GZ = register(f"{SPIKE_DIR}/{basename_of(SPIKE_INS['ercc_url'])}", SPIKE_INS["ercc_url"])
+GFP_FA_GZ = register(f"{SPIKE_DIR}/{basename_of(SPIKE_INS['gfp_url'])}", SPIKE_INS["gfp_url"])
+LAMBDA_FA_GZ = register(f"{SPIKE_DIR}/{basename_of(SPIKE_INS['lambda_url'])}", SPIKE_INS["lambda_url"])
 
-MOUSE_M25_DIR = f"{RESOURCES_DIR}/{MOUSE_M25['assembly']}/GENCODE/{MOUSE_M25['release']}"
-MOUSE_M25_TARGETS = [
-    register(f"{MOUSE_M25_DIR}/{basename_of(url)}", url) for url in MOUSE_M25["urls"].values()
-]
+ERCC_FA = register_decompress(ERCC_FA_GZ)
+GFP_FA = register_decompress(GFP_FA_GZ)
+
+
+def expand_species(template):
+    return [template.format(assembly=a, release=s["release"]) for a, s in SPECIES.items()]
 
 
 rule all:
     input:
-        STAR_IDX_DIR,
-        multiext(f"{BOWTIE2_IDX_DIR}/{HUMAN_GENOME_STEM}", ".1.bt2", ".2.bt2", ".3.bt2", ".4.bt2", ".rev.1.bt2", ".rev.2.bt2"),
-        multiext(f"{BWA_MEM2_IDX_DIR}/{HUMAN_GENOME_STEM}", ".0123", ".amb", ".ann", ".bwt.2bit.64", ".pac"),
-        SALMON_IDX_DIR,
-        f"{MINIMAP2_IDX_DIR}/{HUMAN_GENOME_STEM}.mmi",
-        BISMARK_IDX_DIR,
-        multiext(
-            f"{BWAMETH_IDX_DIR}/{HUMAN_GENOME_STEM}.fa.gz.bwameth.c2t",
-            "", ".0123", ".amb", ".ann", ".bwt.2bit.64", ".pac",
-        ),
-        multiext(f"{MINIBWA_IDX_DIR}/{HUMAN_GENOME_STEM}.fa", ".l2b", ".mbw"),
-        f"{HUMAN_DIR}/excluderanges.bed",
-        f"{HUMAN_DIR}/{HUMAN_GENOME_STEM}.fa.chrom_sizes",
-        HUMAN_PROMOTER_WINDOWS_GZ,
-        MOUSE_M38_TARGETS,
-        MOUSE_M25_TARGETS
+        expand_species(STAR_IDX_T),
+        [expand_species(f"{BOWTIE2_PREFIX_T}{ext}") for ext in (".1.bt2", ".2.bt2", ".3.bt2", ".4.bt2", ".rev.1.bt2", ".rev.2.bt2")],
+        [expand_species(f"{BWA_MEM2_PREFIX_T}{ext}") for ext in (".0123", ".amb", ".ann", ".bwt.2bit.64", ".pac")],
+        expand_species(SALMON_IDX_T),
+        expand_species(MINIMAP2_MMI_T),
+        expand_species(BISMARK_IDX_T),
+        [expand_species(f"{BWAMETH_PREFIX_T}{ext}") for ext in ("", ".0123", ".amb", ".ann", ".bwt.2bit.64", ".pac")],
+        [expand_species(f"{MINIBWA_PREFIX_T}{ext}") for ext in (".l2b", ".mbw")],
+        expand_species(EXCLUDERANGES_BED_T),
+        expand_species(CHROM_SIZES_T),
+        EXTRA_TARGETS
 
 
-# ---------------------------------------------------------------------------
-# Generic downloader for every plain "fetch this URL to this path" resource
-# (registered above via `register()`); everything else below (spike-ins,
-# decompression, index builds) has its own dedicated rule.
-# ---------------------------------------------------------------------------
 rule download:
     output:
         "{path}"
@@ -142,56 +141,43 @@ rule download:
         """
 
 
-# Explicit (non-wildcard) decompress rules, one per plain-text copy needed by
-# the index rules below - kept separate from the generic `download` rule
-# above so their output paths can't collide with its "{path}" wildcard.
-rule decompress_human_genome:
+rule decompress:
     input:
-        HUMAN_GENOME_FA_GZ
+        lambda wildcards: DECOMPRESS_MAP[wildcards.path]
     output:
-        temp(HUMAN_GENOME_FA)
+        temp("{path}")
+    wildcard_constraints:
+        path = "|".join(re.escape(p) for p in DECOMPRESS_MAP)
     shell:
         "gzip -dc {input} > {output}"
 
 
-rule decompress_human_annotation:
+rule combine_with_spikes:
+    # STAR/bowtie2/bwa-mem2/minimap2/minibwa indices all include the ERCC
+    # spike-ins + GFP construct alongside the primary assembly, for every
+    # species.
     input:
-        HUMAN_ANNOTATION_GTF_GZ
-    output:
-        temp(HUMAN_ANNOTATION_GTF)
-    shell:
-        "gzip -dc {input} > {output}"
-
-
-rule decompress_human_transcripts:
-    input:
-        HUMAN_TRANSCRIPTS_FA_GZ
-    output:
-        temp(HUMAN_TRANSCRIPTS_FA)
-    shell:
-        "gzip -dc {input} > {output}"
-
-
-rule star_index:
-    # STAR/bowtie2/bwa-mem2/salmon/minimap2/minibwa indices all include the
-    # ERCC spike-ins + GFP construct alongside the primary assembly. The
-    # example commands in instructions.md only show this explicitly for
-    # bwa-mem2; the fuller recipe (incl. exact ERCC/GFP inclusion for the
-    # others) is cross-checked against the README already living alongside
-    # the real, already-built GRCh38/GENCODE/v48 resources on this server.
-    input:
-        genome = HUMAN_GENOME_FA,
-        gtf = HUMAN_ANNOTATION_GTF,
+        genome = GENOME_FA_T,
         ercc = ERCC_FA,
         gfp = GFP_FA
     output:
-        directory(STAR_IDX_DIR)
+        temp(WITH_SPIKES_FA_T)
+    shell:
+        "cat {input.genome} {input.ercc} {input.gfp} > {output}"
+
+
+rule star_index:
+    input:
+        combined = WITH_SPIKES_FA_T,
+        gtf = lambda wildcards: SPECIES[wildcards.assembly]["annotation_gtf"]
+    output:
+        directory(STAR_IDX_T)
     params:
-        sjdb_overhang = HUMAN["star"]["sjdb_overhang"]
+        sjdb_overhang = lambda wildcards: SPECIES[wildcards.assembly]["star_sjdb_overhang"]
     threads:
         config.get("threads", {}).get("star", 32)
     log:
-        f"{LOG_DIR}/star_index.log"
+        f"{LOG_DIR}/star_index/{{assembly}}_{{release}}.log"
     conda:
         "envs/star.yaml"
     shell:
@@ -200,7 +186,7 @@ rule star_index:
         STAR --runThreadN {threads} \
             --runMode genomeGenerate \
             --genomeDir {output} \
-            --genomeFastaFiles {input.genome} {input.ercc} {input.gfp} \
+            --genomeFastaFiles {input.combined} \
             --sjdbGTFfile {input.gtf} \
             --sjdbOverhang {params.sjdb_overhang} &> {log}
         """
@@ -208,61 +194,57 @@ rule star_index:
 
 rule bowtie2_index:
     input:
-        genome = HUMAN_GENOME_FA,
-        ercc = ERCC_FA,
-        gfp = GFP_FA
+        combined = WITH_SPIKES_FA_T
     output:
-        multiext(f"{BOWTIE2_IDX_DIR}/{HUMAN_GENOME_STEM}", ".1.bt2", ".2.bt2", ".3.bt2", ".4.bt2", ".rev.1.bt2", ".rev.2.bt2")
+        [f"{BOWTIE2_PREFIX_T}{ext}" for ext in (".1.bt2", ".2.bt2", ".3.bt2", ".4.bt2", ".rev.1.bt2", ".rev.2.bt2")]
     params:
-        prefix = f"{BOWTIE2_IDX_DIR}/{HUMAN_GENOME_STEM}"
+        prefix = BOWTIE2_PREFIX_T
     threads:
         config.get("threads", {}).get("bowtie2", 32)
     log:
-        f"{LOG_DIR}/bowtie2_index.log"
+        f"{LOG_DIR}/bowtie2_index/{{assembly}}_{{release}}.log"
     conda:
         "envs/bowtie2.yaml"
     shell:
         """
-        mkdir -p {BOWTIE2_IDX_DIR}
-        bowtie2-build --threads {threads} {input.genome},{input.ercc},{input.gfp} {params.prefix} &> {log}
+        mkdir -p $(dirname {params.prefix})
+        bowtie2-build --threads {threads} {input.combined} {params.prefix} &> {log}
         """
 
 
 rule bwa_mem2_index:
     input:
-        genome = HUMAN_GENOME_FA,
-        ercc = ERCC_FA,
-        gfp = GFP_FA
+        combined = WITH_SPIKES_FA_T
     output:
-        multiext(f"{BWA_MEM2_IDX_DIR}/{HUMAN_GENOME_STEM}", ".0123", ".amb", ".ann", ".bwt.2bit.64", ".pac")
+        [f"{BWA_MEM2_PREFIX_T}{ext}" for ext in (".0123", ".amb", ".ann", ".bwt.2bit.64", ".pac")]
     params:
-        prefix = f"{BWA_MEM2_IDX_DIR}/{HUMAN_GENOME_STEM}"
+        prefix = BWA_MEM2_PREFIX_T
     log:
-        f"{LOG_DIR}/bwa_mem2_index.log"
+        f"{LOG_DIR}/bwa_mem2_index/{{assembly}}_{{release}}.log"
     conda:
         "envs/bwa-mem2.yaml"
     shell:
         """
-        mkdir -p {BWA_MEM2_IDX_DIR}
-        cat {input.genome} {input.ercc} {input.gfp} | bwa-mem2 index -p {params.prefix} - &> {log}
+        mkdir -p $(dirname {params.prefix})
+        bwa-mem2 index -p {params.prefix} {input.combined} &> {log}
         """
 
 
 rule salmon_index:
     input:
-        transcripts = HUMAN_TRANSCRIPTS_FA,
-        genome = HUMAN_GENOME_FA,
+        transcripts = lambda wildcards: SPECIES[wildcards.assembly]["transcripts_fa"],
+        genome = GENOME_FA_T,
         ercc = ERCC_FA,
         gfp = GFP_FA
     output:
-        directory(SALMON_IDX_DIR)
+        directory(SALMON_IDX_T)
     params:
-        decoys = f"{HUMAN_DIR}/decoys.txt",
-        gentrome = f"{HUMAN_DIR}/gentrome.fa"
+        decoys = f"{SPECIES_DIR_T}/decoys.txt",
+        gentrome = f"{SPECIES_DIR_T}/gentrome.fa"
     threads:
         config.get("threads", {}).get("salmon", 32)
     log:
-        f"{LOG_DIR}/salmon_index.log"
+        f"{LOG_DIR}/salmon_index/{{assembly}}_{{release}}.log"
     conda:
         "envs/salmon.yaml"
     shell:
@@ -276,64 +258,55 @@ rule salmon_index:
 
 rule minimap2_index:
     input:
-        genome = HUMAN_GENOME_FA,
-        ercc = ERCC_FA,
-        gfp = GFP_FA
+        combined = WITH_SPIKES_FA_T
     output:
-        f"{MINIMAP2_IDX_DIR}/{HUMAN_GENOME_STEM}.mmi"
+        MINIMAP2_MMI_T
     log:
-        f"{LOG_DIR}/minimap2_index.log"
+        f"{LOG_DIR}/minimap2_index/{{assembly}}_{{release}}.log"
     conda:
         "envs/minimap2.yaml"
     shell:
         """
-        mkdir -p {MINIMAP2_IDX_DIR}
-        cat {input.genome} {input.ercc} {input.gfp} | minimap2 -d {output} - &> {log}
+        mkdir -p $(dirname {output})
+        minimap2 -d {output} {input.combined} &> {log}
         """
 
 
 rule bismark_index:
-    # bismark_genome_preparation accepts gzipped FASTA directly, so this
-    # concatenates the still-gzipped genome + lambda downloads (same trick
-    # rule merge_lanes uses elsewhere in this repo for multi-lane FASTQs)
-    # rather than decompressing first.
     input:
-        genome = HUMAN_GENOME_FA_GZ,
+        genome = lambda wildcards: SPECIES[wildcards.assembly]["genome_fa_gz"],
         lambda_genome = LAMBDA_FA_GZ
     output:
-        directory(BISMARK_IDX_DIR)
+        directory(BISMARK_IDX_T)
     threads:
         config.get("threads", {}).get("bismark_genome_preparation", 24)
     log:
-        f"{LOG_DIR}/bismark_index.log"
+        f"{LOG_DIR}/bismark_index/{{assembly}}_{{release}}.log"
     conda:
         "envs/bismark.yaml"
     shell:
         """
         mkdir -p {output}
-        cat {input.genome} {input.lambda_genome} > {output}/{HUMAN_GENOME_STEM}.with_lambda.fa.gz
+        cat {input.genome} {input.lambda_genome} > {output}/{wildcards.assembly}.primary_assembly.genome.with_lambda.fa.gz
         bismark_genome_preparation --bowtie2 --verbose --genomic_composition --parallel {threads} {output} &> {log}
         """
 
 
 rule bwameth_index:
     input:
-        genome = HUMAN_GENOME_FA_GZ,
+        genome = lambda wildcards: SPECIES[wildcards.assembly]["genome_fa_gz"],
         lambda_genome = LAMBDA_FA_GZ
     output:
-        multiext(
-            f"{BWAMETH_IDX_DIR}/{HUMAN_GENOME_STEM}.fa.gz.bwameth.c2t",
-            "", ".0123", ".amb", ".ann", ".bwt.2bit.64", ".pac",
-        )
+        [f"{BWAMETH_PREFIX_T}{ext}" for ext in ("", ".0123", ".amb", ".ann", ".bwt.2bit.64", ".pac")]
     params:
-        combined = f"{BWAMETH_IDX_DIR}/{HUMAN_GENOME_STEM}.fa.gz"
+        combined = f"{SPECIES_DIR_T}/bwa-meth_idx/{GENOME_STEM_T}.fa.gz"
     log:
-        f"{LOG_DIR}/bwameth_index.log"
+        f"{LOG_DIR}/bwameth_index/{{assembly}}_{{release}}.log"
     conda:
         "envs/bwameth.yaml"
     shell:
         """
-        mkdir -p {BWAMETH_IDX_DIR}
+        mkdir -p $(dirname {params.combined})
         cat {input.genome} {input.lambda_genome} > {params.combined}
         bwameth.py index-mem2 {params.combined} &> {log}
         """
@@ -341,58 +314,36 @@ rule bwameth_index:
 
 rule minibwa_index:
     input:
-        genome = HUMAN_GENOME_FA,
-        ercc = ERCC_FA,
-        gfp = GFP_FA
+        combined = WITH_SPIKES_FA_T
     output:
-        multiext(f"{MINIBWA_IDX_DIR}/{HUMAN_GENOME_STEM}.fa", ".l2b", ".mbw")
+        [f"{MINIBWA_PREFIX_T}{ext}" for ext in (".l2b", ".mbw")]
     params:
-        combined = f"{MINIBWA_IDX_DIR}/{HUMAN_GENOME_STEM}.with_spikes.fa",
-        prefix = f"{MINIBWA_IDX_DIR}/{HUMAN_GENOME_STEM}.fa"
+        prefix = MINIBWA_PREFIX_T
     threads:
         config.get("threads", {}).get("minibwa", 8)
     log:
-        f"{LOG_DIR}/minibwa_index.log"
+        f"{LOG_DIR}/minibwa_index/{{assembly}}_{{release}}.log"
     conda:
         "envs/minibwa.yaml"
     shell:
         """
-        mkdir -p {MINIBWA_IDX_DIR}
-        cat {input.genome} {input.ercc} {input.gfp} > {params.combined}
-        minibwa index -t{threads} {params.combined} {params.prefix} &> {log}
-        rm -f {params.combined}
+        mkdir -p $(dirname {params.prefix})
+        minibwa index -t{threads} {input.combined} {params.prefix} &> {log}
         """
-
-
-rule excluderanges:
-    output:
-        f"{HUMAN_DIR}/excluderanges.bed"
-    params:
-        ah_id = HUMAN["excluderanges"]["annotationhub_id"]
-    log:
-        f"{LOG_DIR}/excluderanges.log"
-    conda:
-        "envs/excluderanges.yaml"
-    script:
-        "scripts/excluderanges.R"
 
 
 rule chrom_sizes:
     # Since the ERCC + GFP sequences are included in several indices above,
-    # they need entries in chrom.sizes too.
+    # they need entries in chrom.sizes too - `faSize -detailed` lists one row
+    # per sequence, so running it once against the combined FASTA gives the
+    # same result as running it separately per file and concatenating.
     input:
-        genome = HUMAN_GENOME_FA,
-        ercc = ERCC_FA,
-        gfp = GFP_FA
+        combined = WITH_SPIKES_FA_T
     output:
-        f"{HUMAN_DIR}/{HUMAN_GENOME_STEM}.fa.chrom_sizes"
+        CHROM_SIZES_T
     log:
-        f"{LOG_DIR}/chrom_sizes.log"
+        f"{LOG_DIR}/chrom_sizes/{{assembly}}_{{release}}.log"
     conda:
         "envs/ucsc.yaml"
     shell:
-        """
-        faSize -detailed -tab {input.genome} > {output} 2> {log}
-        faSize -detailed -tab {input.ercc} >> {output} 2>> {log}
-        faSize -detailed -tab {input.gfp} >> {output} 2>> {log}
-        """
+        "faSize -detailed -tab {input.combined} > {output} 2> {log}"
