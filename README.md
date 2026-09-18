@@ -2,7 +2,8 @@
 
 # `snakemake` workflows developed for Coriell Bioinformatics 
 
-For full tranparency, I have used Claude for code assistance in the development of these workflows. 
+> [!Warning]
+> This project use Claude Code for coding assistance.
 
 ## Current Workflows:
 
@@ -12,7 +13,7 @@ For full tranparency, I have used Claude for code assistance in the development 
 - Paired-end RRBS processing, methylation calling, and extraction
 - De novo transcript assembly and quantification
 - Estimation of bacterial read abundance from sequencing data using Kraken2 and Braken
-- Somatic variant calling from tumor-normal WES/WGS data (work-in-progress)
+- Somatic variant calling from WES/WGS data (work-in-progress)
 
 ## Caveats
 
