@@ -16,15 +16,17 @@ The input "samples.csv" file has the following required columns:
 
 ### Rules
 
-1. Read trimming with `fastp` with `--detect_adapter_for_pe` added as a param
-2. Alignment with `bwa mem2` using the Snakemake wrapper: https://snakemake-wrappers.readthedocs.io/en/stable/wrappers/bio/bwa-mem2/mem.html
-3. If needed, `Picard AddReplaceReadGroups` using the Snakemake wrapper: https://snakemake-wrappers.readthedocs.io/en/stable/wrappers/bio/picard/addorreplacereadgroups.html
-4. If needed, `Picard MergeSamFiles` using the Snakemake wrapper: https://snakemake-wrappers.readthedocs.io/en/stable/wrappers/bio/picard/mergesamfiles.html
-5. `Picard MarkDuplicates` using the snakemake wrapper: https://snakemake-wrappers.readthedocs.io/en/stable/wrappers/bio/picard/markduplicates.html
-6. Short variant calling and filtering using Mutect2 with the snakemake wrapper: https://snakemake-wrappers.readthedocs.io/en/stable/meta-wrappers/bio/gatk_mutect2_calling.html
-7. Short variant calling and filtering using MuSE2 based on the snakemake rule: https://github.com/wwylab/MuSE/blob/master/MuSE.Snakemake/rules/muse2.smk
-8. Short variant calling and filtering using Strelka2 using the snakemake wrapper: https://snakemake-wrappers.readthedocs.io/en/stable/wrappers/bio/strelka/somatic.html
-9. Consensus variant calling on 'PASS' variants using `bcftools isec`
-10. Variant annotation using VEP: https://snakemake-wrappers.readthedocs.io/en/stable/wrappers/bio/vep/annotate.html
-11. Copy number estimation using CNVkit: https://snakemake-wrappers.readthedocs.io/en/stable/wrappers/bio/cnvkit/batch.html
+0. Resource bundle download from GATK resources cloud bucket
+1. Read trimming with [fastp](https://github.com/OpenGene/fastp)
+2. Alignment with `bwa mem` using the [snakemake wrapper](https://snakemake-wrappers.readthedocs.io/en/stable/wrappers/bio/bwa/mem.html)
+3. If needed, `Picard MergeSamFiles` using the [snakemake wrapper](https://snakemake-wrappers.readthedocs.io/en/stable/wrappers/bio/picard/mergesamfiles.html)
+4. `Picard MarkDuplicates` using the [snakemake wrapper](https://snakemake-wrappers.readthedocs.io/en/stable/wrappers/bio/picard/markduplicates.html)
+5. Short variant calling and filtering using [Mutect2](https://gatk.broadinstitute.org/hc/en-us/articles/360037593851-Mutect2) with the [snakemake wrapper](https://snakemake-wrappers.readthedocs.io/en/stable/meta-wrappers/bio/gatk_mutect2_calling.html)
+6. Short variant calling and filtering using [MuSE2](https://github.com/wwylab/MuSE) based on the [snakemake rule](https://github.com/wwylab/MuSE/blob/master/MuSE.Snakemake/rules/muse2.smk)
+7. Short variant calling and filtering using [Strelka2](https://github.com/Illumina/strelka) using the [snakemake wrapper](https://snakemake-wrappers.readthedocs.io/en/stable/wrappers/bio/strelka/somatic.html)
+9. Short variant calling using [DeepSomatic](https://github.com/google/deepsomatic)
+8. Consensus variant calling on 'PASS' variants using `bcftools isec`
+9. Variant annotation using [VEP](https://github.com/Ensembl/ensembl-vep) [snakemake wrapper](https://snakemake-wrappers.readthedocs.io/en/stable/wrappers/bio/vep/annotate.html)
+10. Copy number estimation using [CNVkit](https://cnvkit.readthedocs.io/en/stable/) [snakemake wrapper](https://snakemake-wrappers.readthedocs.io/en/stable/wrappers/bio/cnvkit/batch.html)
+11. Rapid (kind of) genotyping of known somatic variants from the tumor BAM files with [somaticfreq](https://github.com/PoisonAlien/somaticfreq)
 
