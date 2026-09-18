@@ -21,6 +21,7 @@ DEEPSOMATIC_OUT = f"{WORK_DIR}/deepsomatic"
 CONSENSUS_OUT = f"{WORK_DIR}/isec"
 ANNOTATED_OUT = f"{WORK_DIR}/vep"
 CNVKIT_OUT = f"{WORK_DIR}/cnvkit"
+SOMATICFREQ_OUT = f"{WORK_DIR}/somaticfreq"
 RESOURCES_OUT = f"{WORK_DIR}/resources"
 
 # Samples -----------------------------------------------------------------
@@ -58,6 +59,7 @@ TUMOR_ONLY_PATIENTS = {p: v for p, v in PATIENTS.items() if not v["normal"]}
 
 ALL_SAMPLES = sorted(SAMPLES["sample"].unique())
 ALL_NORMAL_SAMPLES = sorted({v["normal"] for v in PAIRED_PATIENTS.values()})
+ALL_TUMOR_SAMPLES = sorted({v["tumor"] for v in PATIENTS.values()})
 
 
 def _alternation_or_no_match(values):
@@ -119,7 +121,7 @@ GATK_RESOURCE_URLS = {
 REPO_RAW_BASE = "https://raw.githubusercontent.com/coriell-research/snakemake-pipelines/main/somatic-variant-calling/data"
 
 REPO_RESOURCE_URLS = {
-    "agilent-sure-select-v6-all-exons_S07604514_Padded.bed": f"{REPO_RAW_BASE}/agilent-sure-select-v6-all-exons_S07604514_Padded.bed",
+    "agilent-sure-select-v6-all-exons_S07604514_Padded.bed.gz": f"{REPO_RAW_BASE}/agilent-sure-select-v6-all-exons_S07604514_Padded.bed.gz",
     "cancerhotspots_v2_GRCh38.tsv": f"{REPO_RAW_BASE}/cancerhotspots_v2_GRCh38.tsv",
 }
 
@@ -133,6 +135,7 @@ rule all:
     input:
         expand(f"{ANNOTATED_OUT}/{{patient}}.annotated.vcf.gz", patient=PATIENTS.keys()),
         expand(f"{CNVKIT_OUT}/{{patient}}.call.cns", patient=PATIENTS.keys()),
+        expand(f"{SOMATICFREQ_OUT}/{{sample}}.tsv", sample=ALL_TUMOR_SAMPLES),
 
 
 rule download_gatk_resource:
@@ -168,16 +171,30 @@ rule download_repo_resource:
         "curl -fsSL --retry 3 --retry-delay 5 -o {output} {params.url} 2> {log}"
 
 
-# Convenience target to pre-fetch every repo resource in one go.
+# Convenience target to pre-fetch every repo resource in one go (unzipped,
+# where applicable, so the results are immediately usable).
 rule download_repo_resources:
     input:
-        expand(f"{DOWNLOAD_DIR}/{{resource}}", resource=REPO_RESOURCE_URLS.keys())
+        expand(f"{DOWNLOAD_DIR}/{{resource}}", resource=REPO_RESOURCE_URLS.keys()),
+        f"{DOWNLOAD_DIR}/agilent-sure-select-v6-all-exons_S07604514_Padded.bed",
+
+
+# The baits BED is stored gzipped in the repo (see REPO_RESOURCE_URLS above);
+# cnvkit/DeepSomatic need it decompressed, so it's unzipped right after download.
+rule unzip_baits:
+    input:
+        f"{DOWNLOAD_DIR}/agilent-sure-select-v6-all-exons_S07604514_Padded.bed.gz"
+    output:
+        f"{DOWNLOAD_DIR}/agilent-sure-select-v6-all-exons_S07604514_Padded.bed"
+    shell:
+        "gunzip -c {input} > {output}"
 
 
 # Convenience target to pre-fetch everything (GATK + repo resources) in one go.
 rule download_resources:
     input:
-        expand(f"{DOWNLOAD_DIR}/{{resource}}", resource=list(GATK_RESOURCE_URLS.keys()) + list(REPO_RESOURCE_URLS.keys()))
+        expand(f"{DOWNLOAD_DIR}/{{resource}}", resource=list(GATK_RESOURCE_URLS.keys()) + list(REPO_RESOURCE_URLS.keys())),
+        f"{DOWNLOAD_DIR}/agilent-sure-select-v6-all-exons_S07604514_Padded.bed",
 
 
 rule fastp:
@@ -845,3 +862,38 @@ rule cnvkit_batch:
         f"{CNVKIT_OUT}/{{patient}}.log"
     wrapper:
         "v9.17.1/bio/cnvkit/batch"
+
+
+# somaticfreq (https://github.com/PoisonAlien/somaticfreq#usage) - targeted
+# VAF/read-count check at known cancer hotspots, run on each tumor BAM.
+# Not on conda; expected to already be installed and on PATH. Rather than
+# letting a missing binary fail the whole pipeline, the rule checks for it
+# first and, if absent, logs a warning and writes empty placeholder outputs
+# instead of erroring out.
+
+rule somaticfreq:
+    input:
+        bam = f"{MARKDUP_OUT}/{{sample}}.bam",
+        bai = f"{MARKDUP_OUT}/{{sample}}.bam.bai",
+        loci = config["hotspots"]["path"],
+        ref = config["ref"]["fasta"],
+        ref_fai = config["ref"]["fai"],
+    output:
+        tsv = f"{SOMATICFREQ_OUT}/{{sample}}.tsv",
+        html = f"{SOMATICFREQ_OUT}/{{sample}}.html",
+    wildcard_constraints:
+        sample = _alternation_or_no_match(ALL_TUMOR_SAMPLES)
+    params:
+        extra = config["somaticfreq"]["extra"],
+        out_prefix = f"{SOMATICFREQ_OUT}/{{sample}}",
+    log:
+        f"{SOMATICFREQ_OUT}/{{sample}}.log"
+    shell:
+        """
+        if ! command -v somaticfreq >/dev/null 2>&1; then
+            echo "WARNING: somaticfreq not found on PATH (https://github.com/PoisonAlien/somaticfreq) - skipping, writing empty placeholder outputs. Install it locally and re-run to enable this rule." > {log}
+            touch {output.tsv} {output.html}
+            exit 0
+        fi
+        somaticfreq {params.extra} -f {input.ref} -o {params.out_prefix} {input.loci} {input.bam} &> {log}
+        """

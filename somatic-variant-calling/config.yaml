@@ -65,17 +65,25 @@ vep:
   extra: "--everything"
 
 cnvkit:
-  # Agilent Sure Select v6 All Exons padded BED file. Downloaded automatically
-  # from this repo (see Resource download section in the Snakefile) - only
-  # works once somatic-variant-calling/data/ is committed and pushed.
+  # Agilent Sure Select v6 All Exons padded BED file. Stored gzipped in this
+  # repo; downloaded and unzipped automatically (see rule unzip_baits in the
+  # Snakefile) - only works once somatic-variant-calling/data/ is committed
+  # and pushed.
   baits: "resources/agilent-sure-select-v6-all-exons_S07604514_Padded.bed"
   method: "hybrid"
 
 hotspots:
   # cancerhotspots.org (v2, GRCh38) recurrent mutation positions. Downloaded
-  # automatically like cnvkit.baits above, but not yet consumed by any rule -
-  # reserved for a future hotspot-annotation/filtering step.
+  # automatically like cnvkit.baits above. Used by rule somaticfreq below.
   path: "resources/cancerhotspots_v2_GRCh38.tsv"
+
+somaticfreq:
+  # https://github.com/PoisonAlien/somaticfreq - not on conda, expected to
+  # already be installed and on PATH; rule somaticfreq no-ops with a warning
+  # rather than failing the pipeline if it isn't found.
+  # Extra flags, e.g. "-q 20 -d 50" to override the tool's own defaults
+  # (mapping quality, min depth, VAF threshold, etc - see its README).
+  extra: ""
 
 java:
   java_args: "-Xmx64G"
