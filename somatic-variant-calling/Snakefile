@@ -1,3 +1,6 @@
+import os
+import re
+
 import pandas as pd
 
 
@@ -8,65 +11,186 @@ FASTP_OUT = f"{WORK_DIR}/fastp"
 BWA_OUT = f"{WORK_DIR}/bwa"
 MERGE_OUT = f"{WORK_DIR}/merge"
 MARKDUP_OUT = f"{WORK_DIR}/markdup"
-VARSCAN_PAIRED_OUT = f"{WORK_DIR}/varscan_paired"
-MUSE_PAIRED_OUT = f"{WORK_DIR}/muse_paired"
 PILEUP_SUMMARY_OUT = f"{WORK_DIR}/pileup_summary"
-MUTECT_PAIRED_OUT = f"{WORK_DIR}/mutect_paired"
-CONTAM_PAIRED_OUT = f"{WORK_DIR}/contam_paired"
-CONSENSUS_PAIRED_OUT = f"{WORK_DIR}/isec_paired"
-ANNOTATED_PAIRED_OUT = f"{WORK_DIR}/annotate_paired"
-CNVKIT_PAIRED_OUT = f"{WORK_DIR}/cnvkit_paired"
+MUTECT_OUT = f"{WORK_DIR}/mutect"
+ORIENTATION_MODEL_OUT = f"{WORK_DIR}/orientation_model"
+CONTAM_OUT = f"{WORK_DIR}/contamination"
+MUSE_PAIRED_OUT = f"{WORK_DIR}/muse_paired"
+STRELKA_PAIRED_OUT = f"{WORK_DIR}/strelka_paired"
+DEEPSOMATIC_OUT = f"{WORK_DIR}/deepsomatic"
+CONSENSUS_OUT = f"{WORK_DIR}/isec"
+ANNOTATED_OUT = f"{WORK_DIR}/vep"
+CNVKIT_OUT = f"{WORK_DIR}/cnvkit"
+RESOURCES_OUT = f"{WORK_DIR}/resources"
 
-# Define samples and experimental units
-SAMPLES = pd.read_csv("samples.csv", sep=",", header=0)
-UNITS = SAMPLES["PU"].tolist()
+# Samples -----------------------------------------------------------------
 
-# Extract the PUs that need to be merged into single sample BAMs
-PU_BY_SAMPLE = SAMPLES.groupby('SM')['PU'].agg(list).to_dict()
+SAMPLES = pd.read_csv("samples.csv", sep=",", header=0, dtype={"lane": str})
 
-def get_replicates_for_merge(wildcards):
-    units = PU_BY_SAMPLE[wildcards.sample]
-    return [f"{BWA_OUT}/{u}.sorted.bam" for u in units]
+# lanes belonging to each (biological) sample - merged if there is more than one
+LANES_BY_SAMPLE = SAMPLES.groupby("sample")["lane"].agg(list).to_dict()
+
+def get_lane_bams(wildcards):
+    lanes = LANES_BY_SAMPLE[wildcards.sample]
+    return [f"{BWA_OUT}/{wildcards.sample}/{l}.sorted.bam" for l in lanes]
+
+def get_sample_bam_for_dedup(wildcards):
+    lanes = LANES_BY_SAMPLE[wildcards.sample]
+    if len(lanes) > 1:
+        return f"{MERGE_OUT}/{wildcards.sample}.bam"
+    return f"{BWA_OUT}/{wildcards.sample}/{lanes[0]}.sorted.bam"
+
+# patient -> {"tumor": sample, "normal": sample or None}
+PATIENTS = {}
+for patient, group in SAMPLES.groupby("patient"):
+    patient = str(patient)
+    tumor_samples = group.loc[group["status"] == "tumor", "sample"].unique()
+    normal_samples = group.loc[group["status"] == "normal", "sample"].unique()
+    if len(tumor_samples) == 0:
+        continue
+    PATIENTS[patient] = {
+        "tumor": tumor_samples[0],
+        "normal": normal_samples[0] if len(normal_samples) else None,
+    }
+
+PAIRED_PATIENTS = {p: v for p, v in PATIENTS.items() if v["normal"]}
+TUMOR_ONLY_PATIENTS = {p: v for p, v in PATIENTS.items() if not v["normal"]}
+
+ALL_SAMPLES = sorted(SAMPLES["sample"].unique())
+ALL_NORMAL_SAMPLES = sorted({v["normal"] for v in PAIRED_PATIENTS.values()})
 
 
-# Extract a dictionary of tumor-normal pairs and single samples
-PAIRED_SAMPLES = {}
-SINGLE_SAMPLES = {}
-for sample_name, group in SAMPLES.groupby("sample_name"):
-    sample_id = str(sample_name)
-    tumor_sms = group[group["tumor_normal"] == "tumor"]["SM"].unique()
-    normal_sms = group[group["tumor_normal"] == "normal"]["SM"].unique()
-    
-    if len(tumor_sms) > 0:
-        tumor_sm = tumor_sms[0]
-        if len(normal_sms) > 0:
-            normal_sm = normal_sms[0]
-            PAIRED_SAMPLES[sample_id] = {"tumor": tumor_sm, "normal": normal_sm}
-        else:
-            SINGLE_SAMPLES[sample_id] = {"tumor": tumor_sm}
+def _alternation_or_no_match(values):
+    values = list(values)
+    return "|".join(re.escape(v) for v in values) if values else "(?!)"
+
+
+# Anchors {patient}/{sample} to known IDs: several rules downstream share a
+# suffix (e.g. "{patient}.vcf.gz" vs "{patient}.pass.vcf.gz") and wildcards are
+# greedy by default, which is ambiguous unless constrained to known IDs.
+wildcard_constraints:
+    patient = _alternation_or_no_match(PATIENTS.keys()),
+    sample = _alternation_or_no_match(ALL_SAMPLES),
+    lane = "[^/]+",
+
+
+# Resource download ------------------------------------------------------
+# Downloads every resource this pipeline's config.yaml points at into
+# ./resources (relative to this Snakefile, distinct from the pipeline's
+# WORK_DIR outputs), so no local absolute paths need to be manually
+# specified in config.yaml:
+#  - GATK hg38 resource-bundle files, from Broad's public GCS buckets
+#    (ref.fasta/fai/dict, ref.bwa_index_prefix's .amb/.ann/.bwt/.pac/.sa,
+#    gatk.pon/glr/snps, muse.dbsnp)
+#  - Project-specific resources (WES baits, cancer hotspots) committed
+#    straight into this repo, fetched via raw.githubusercontent.com
+#    (cnvkit.baits, hotspots.path)
+# config.yaml points those keys directly at these paths, so any rule needing
+# them pulls the corresponding download in automatically - a plain
+# `snakemake` run downloads whatever is missing. This pipeline does not
+# build its own bwa index (see rule bwa_mem below); it downloads the
+# prebuilt one already sitting next to the fasta in the GATK bucket.
+
+DOWNLOAD_DIR = "resources"
+GATK_REF_BUCKET = "https://storage.googleapis.com/gcp-public-data--broad-references/hg38/v0"
+GATK_MUTECT_BUCKET = "https://storage.googleapis.com/gatk-best-practices/somatic-hg38"
+
+GATK_RESOURCE_URLS = {
+    "Homo_sapiens_assembly38.fasta": f"{GATK_REF_BUCKET}/Homo_sapiens_assembly38.fasta",
+    "Homo_sapiens_assembly38.fasta.fai": f"{GATK_REF_BUCKET}/Homo_sapiens_assembly38.fasta.fai",
+    "Homo_sapiens_assembly38.dict": f"{GATK_REF_BUCKET}/Homo_sapiens_assembly38.dict",
+    "Homo_sapiens_assembly38.fasta.amb": f"{GATK_REF_BUCKET}/Homo_sapiens_assembly38.fasta.amb",
+    "Homo_sapiens_assembly38.fasta.ann": f"{GATK_REF_BUCKET}/Homo_sapiens_assembly38.fasta.ann",
+    "Homo_sapiens_assembly38.fasta.bwt": f"{GATK_REF_BUCKET}/Homo_sapiens_assembly38.fasta.bwt",
+    "Homo_sapiens_assembly38.fasta.pac": f"{GATK_REF_BUCKET}/Homo_sapiens_assembly38.fasta.pac",
+    "Homo_sapiens_assembly38.fasta.sa": f"{GATK_REF_BUCKET}/Homo_sapiens_assembly38.fasta.sa",
+    "Homo_sapiens_assembly38.dbsnp138.vcf.gz": f"{GATK_REF_BUCKET}/Homo_sapiens_assembly38.dbsnp138.vcf.gz",
+    "Homo_sapiens_assembly38.dbsnp138.vcf.gz.tbi": f"{GATK_REF_BUCKET}/Homo_sapiens_assembly38.dbsnp138.vcf.gz.tbi",
+    "1000g_pon.hg38.vcf.gz": f"{GATK_MUTECT_BUCKET}/1000g_pon.hg38.vcf.gz",
+    "1000g_pon.hg38.vcf.gz.tbi": f"{GATK_MUTECT_BUCKET}/1000g_pon.hg38.vcf.gz.tbi",
+    "af-only-gnomad.hg38.vcf.gz": f"{GATK_MUTECT_BUCKET}/af-only-gnomad.hg38.vcf.gz",
+    "af-only-gnomad.hg38.vcf.gz.tbi": f"{GATK_MUTECT_BUCKET}/af-only-gnomad.hg38.vcf.gz.tbi",
+    "small_exac_common_3.hg38.vcf.gz": f"{GATK_MUTECT_BUCKET}/small_exac_common_3.hg38.vcf.gz",
+    "small_exac_common_3.hg38.vcf.gz.tbi": f"{GATK_MUTECT_BUCKET}/small_exac_common_3.hg38.vcf.gz.tbi",
+}
+
+# Files must live (and be committed) at this exact repo path. Update if this
+# repo is ever forked/renamed/moved, or these files relocated within it.
+REPO_RAW_BASE = "https://raw.githubusercontent.com/coriell-research/snakemake-pipelines/main/somatic-variant-calling/data"
+
+REPO_RESOURCE_URLS = {
+    "agilent-sure-select-v6-all-exons_S07604514_Padded.bed": f"{REPO_RAW_BASE}/agilent-sure-select-v6-all-exons_S07604514_Padded.bed",
+    "cancerhotspots_v2_GRCh38.tsv": f"{REPO_RAW_BASE}/cancerhotspots_v2_GRCh38.tsv",
+}
 
 
 # Rules ----------------------------------------------------------------------
+# rule all must stay the first rule in the file - it's Snakemake's implicit
+# default target when none is given on the command line.
 
 
 rule all:
     input:
-        expand(f"{ANNOTATED_PAIRED_OUT}/{{sample}}.maf", sample=PAIRED_SAMPLES.keys()),
-        f"{CNVKIT_PAIRED_OUT}/reference.cnn"
+        expand(f"{ANNOTATED_OUT}/{{patient}}.annotated.vcf.gz", patient=PATIENTS.keys()),
+        expand(f"{CNVKIT_OUT}/{{patient}}.call.cns", patient=PATIENTS.keys()),
 
+
+rule download_gatk_resource:
+    output:
+        f"{DOWNLOAD_DIR}/{{resource}}"
+    wildcard_constraints:
+        resource = _alternation_or_no_match(GATK_RESOURCE_URLS.keys())
+    params:
+        url = lambda w: GATK_RESOURCE_URLS[w.resource]
+    log:
+        f"{DOWNLOAD_DIR}/{{resource}}.log"
+    shell:
+        "curl -fsSL --retry 3 --retry-delay 5 -o {output} {params.url} 2> {log}"
+
+
+# Convenience target to pre-fetch every GATK resource in one go, e.g. ahead
+# of submitting cluster jobs: snakemake --cores 1 download_gatk_resources
+rule download_gatk_resources:
+    input:
+        expand(f"{DOWNLOAD_DIR}/{{resource}}", resource=GATK_RESOURCE_URLS.keys())
+
+
+rule download_repo_resource:
+    output:
+        f"{DOWNLOAD_DIR}/{{resource}}"
+    wildcard_constraints:
+        resource = _alternation_or_no_match(REPO_RESOURCE_URLS.keys())
+    params:
+        url = lambda w: REPO_RESOURCE_URLS[w.resource]
+    log:
+        f"{DOWNLOAD_DIR}/{{resource}}.log"
+    shell:
+        "curl -fsSL --retry 3 --retry-delay 5 -o {output} {params.url} 2> {log}"
+
+
+# Convenience target to pre-fetch every repo resource in one go.
+rule download_repo_resources:
+    input:
+        expand(f"{DOWNLOAD_DIR}/{{resource}}", resource=REPO_RESOURCE_URLS.keys())
+
+
+# Convenience target to pre-fetch everything (GATK + repo resources) in one go.
+rule download_resources:
+    input:
+        expand(f"{DOWNLOAD_DIR}/{{resource}}", resource=list(GATK_RESOURCE_URLS.keys()) + list(REPO_RESOURCE_URLS.keys()))
 
 
 rule fastp:
     input:
-        r1 = lambda w: SAMPLES.loc[SAMPLES["PU"] == w.pu, "read1"].item(),
-        r2 = lambda w: SAMPLES.loc[SAMPLES["PU"] == w.pu, "read2"].item()
+        r1 = lambda w: SAMPLES.loc[(SAMPLES["sample"] == w.sample) & (SAMPLES["lane"] == w.lane), "read1"].item(),
+        r2 = lambda w: SAMPLES.loc[(SAMPLES["sample"] == w.sample) & (SAMPLES["lane"] == w.lane), "read2"].item(),
     output:
-        r1_out = temp(f"{FASTP_OUT}/{{pu}}.trimmed.1.fq.gz"),
-        r2_out = temp(f"{FASTP_OUT}/{{pu}}.trimmed.2.fq.gz"),
-        html = f"{FASTP_OUT}/{{pu}}.fastp.html",
-        json = f"{FASTP_OUT}/{{pu}}.fastp.json"
+        r1_out = temp(f"{FASTP_OUT}/{{sample}}/{{lane}}.trimmed.1.fq.gz"),
+        r2_out = temp(f"{FASTP_OUT}/{{sample}}/{{lane}}.trimmed.2.fq.gz"),
+        html = f"{FASTP_OUT}/{{sample}}/{{lane}}.fastp.html",
+        json = f"{FASTP_OUT}/{{sample}}/{{lane}}.fastp.json"
     log:
-        f"{FASTP_OUT}/{{pu}}_fastp.log"
+        f"{FASTP_OUT}/{{sample}}/{{lane}}.log"
     params:
         extra = config["fastp"]["extra_params"]
     shell:
@@ -74,521 +198,650 @@ rule fastp:
         "{params.extra} --html {output.html} --json {output.json} &> {log}"
 
 
-rule bwa:
+# bwa mem (https://snakemake-wrappers.readthedocs.io/en/stable/wrappers/bio/bwa/mem.html)
+# Uses the classic bwa index (.amb/.ann/.bwt/.pac/.sa) downloaded alongside
+# ref.fasta from the GATK bucket - no index is built by this pipeline.
+
+rule bwa_mem:
     input:
-        r1 = f"{FASTP_OUT}/{{pu}}.trimmed.1.fq.gz",
-        r2 = f"{FASTP_OUT}/{{pu}}.trimmed.2.fq.gz",
+        reads = [
+            f"{FASTP_OUT}/{{sample}}/{{lane}}.trimmed.1.fq.gz",
+            f"{FASTP_OUT}/{{sample}}/{{lane}}.trimmed.2.fq.gz",
+        ],
+        idx = multiext(config["ref"]["bwa_index_prefix"], ".amb", ".ann", ".bwt", ".pac", ".sa"),
     output:
-        bam = f"{BWA_OUT}/{{pu}}.sorted.bam",
-        bai = f"{BWA_OUT}/{{pu}}.sorted.bam.bai"
-    params:
-         pid = lambda w: SAMPLES.loc[SAMPLES["PU"] == w.pu, "ID"].item(),
-         sm = lambda w: SAMPLES.loc[SAMPLES["PU"] == w.pu, "SM"].item(),
-         pl = lambda w: SAMPLES.loc[SAMPLES["PU"] == w.pu, "PL"].item(),
-         lb = lambda w: SAMPLES.loc[SAMPLES["PU"] == w.pu, "LB"].item(),
-         pu = lambda w: SAMPLES.loc[SAMPLES["PU"] == w.pu, "PU"].item(),
-         idx = config["bwa"]["idx"],
-         gb = 4
+        f"{BWA_OUT}/{{sample}}/{{lane}}.sorted.bam"
     threads:
         8
+    params:
+        # Read groups are set directly here from patient/sample/lane, so the
+        # separate "if needed" Picard AddOrReplaceReadGroups step is not
+        # needed. PL is not part of samples.csv, so ILLUMINA is assumed.
+        extra = lambda w: f"-R '@RG\\tID:{w.lane}\\tSM:{w.sample}\\tPL:ILLUMINA\\tLB:{w.sample}\\tPU:{w.lane}'",
+        sorting = "samtools",
+        sort_order = "coordinate",
+        sort_extra = "",
     log:
-        f"{BWA_OUT}/{{pu}}.log"
-    shell:
-        """
-        bwa mem -t {threads} -R '@RG\\tID:{params.pid}\\tSM:{params.sm}\\tPL:{params.pl}\\tLB:{params.lb}\\tPU:{params.pu}' {params.idx} {input.r1} {input.r2} | \
-        samtools sort -@{threads} -m{params.gb}g -o {output.bam} - && samtools index {output.bam}
-        """
+        f"{BWA_OUT}/{{sample}}/{{lane}}.log"
+    wrapper:
+        "v9.17.1/bio/bwa/mem"
 
+
+# Picard MergeSamFiles (https://snakemake-wrappers.readthedocs.io/en/stable/wrappers/bio/picard/mergesamfiles.html)
+# Only requested (via get_sample_bam_for_dedup) for samples with more than
+# one lane - i.e. "if needed".
 
 rule merge_bam:
     input:
-        get_replicates_for_merge
+        get_lane_bams
     output:
         f"{MERGE_OUT}/{{sample}}.bam"
+    threads:
+        1
+    resources:
+        mem_mb = 8192
     params:
-        bams = lambda w, input: " ".join([f"-I {f}" for f in input]),
-        java_args = config["java"]["java_args"]
+        extra = "--ASSUME_SORTED true --SORT_ORDER coordinate",
     log:
         f"{MERGE_OUT}/{{sample}}.log"
-    shell:
-        "java {params.java_args} -jar /usr/local/programs/picard.jar MergeSamFiles "
-          "{params} "
-          "--OUTPUT {output} "
-          "--ASSUME_SORTED true "
-          "--CREATE_INDEX true "
-          "--SORT_ORDER coordinate"
+    wrapper:
+        "v9.17.1/bio/picard/mergesamfiles"
 
+
+# Picard MarkDuplicates (https://snakemake-wrappers.readthedocs.io/en/stable/wrappers/bio/picard/markduplicates.html)
 
 rule mark_duplicates:
     input:
-        f"{MERGE_OUT}/{{sample}}.bam"
+        bams = get_sample_bam_for_dedup
     output:
         bam = f"{MARKDUP_OUT}/{{sample}}.bam",
         metrics = f"{MARKDUP_OUT}/{{sample}}.metrics.txt"
+    resources:
+        mem_mb = 16384
     params:
-        java_args = config["java"]["java_args"]
+        extra = "--ASSUME_SORT_ORDER coordinate",
     log:
-        f"{MARKDUP_OUT}/{{sample}}.log",
-    shell:
-        "java {params.java_args} -jar /usr/local/programs/picard.jar MarkDuplicates "
-          "-I {input} "
-          "-O {output.bam} "
-          "-M {output.metrics} "
-          "--ASSUME_SORT_ORDER coordinate "
-          "--CREATE_INDEX true "
+        f"{MARKDUP_OUT}/{{sample}}.log"
+    wrapper:
+        "v9.17.1/bio/picard/markduplicates"
 
 
-rule varscan_paired:
-    input:
-        tumor = lambda w: f"{MARKDUP_OUT}/{PAIRED_SAMPLES[str(w.sample)]['tumor']}.bam",
-        normal = lambda w: f"{MARKDUP_OUT}/{PAIRED_SAMPLES[str(w.sample)]['normal']}.bam"
-    output:
-        snp_vcf = f"{VARSCAN_PAIRED_OUT}/{{sample}}.snp.vcf",
-        indel_vcf = f"{VARSCAN_PAIRED_OUT}/{{sample}}.indel.vcf"
-    log:
-        f"{VARSCAN_PAIRED_OUT}/{{sample}}.somatic.log"
-    params:
-        max_depth = 100000,
-        min_mapq = 20,
-        ref = config["bwa"]["idx"],
-        out_prefix = f"{VARSCAN_PAIRED_OUT}/{{sample}}",
-        min_cov = 10,
-        min_var_freq = 0.05,
-        somatic_p = 0.05,
-        strand_filter = 1
-    shell:
-        """
-        samtools mpileup \
-            -d {params.max_depth} \
-            -q {params.min_mapq} \
-            --no-BAQ \
-            -f {params.ref} \
-            {input.normal} {input.tumor} |
-        java -jar /usr/local/programs/VarScan.jar somatic \
-            - \
-            {params.out_prefix} \
-            --mpileup 1 \
-            --output-vcf 1 \
-            --min-coverage {params.min_cov} \
-            --min-var-freq {params.min_var_freq} \
-            --somatic-p-value {params.somatic_p} \
-            --strand-filter {params.strand_filter} \
-            --output-snp {output.snp_vcf} \
-            --output-indel {output.indel_vcf} \
-            2> {log}
-        """
-
-
-rule varscan_filter_paired:
-    input:
-        snp_vcf = f"{VARSCAN_PAIRED_OUT}/{{sample}}.snp.vcf",
-        indel_vcf = f"{VARSCAN_PAIRED_OUT}/{{sample}}.indel.vcf",
-    output:
-        vcf_filtered = f"{VARSCAN_PAIRED_OUT}/{{sample}}.snp.Somatic.hc.vcf"
-    log:
-        f"{VARSCAN_PAIRED_OUT}/{{sample}}.filter.log"
-    params:
-        min_cov = 10,
-        min_reads = 4,
-        min_strands = 1,
-        min_var_freq = 0.05,
-        p_value = 0.05
-    shell:
-        """
-        java -jar /usr/local/programs/VarScan.jar somaticFilter \
-            {input.snp_vcf} \
-            --min-coverage {params.min_cov} \
-            --min-reads2 {params.min_reads} \
-            --min-strands2 {params.min_strands} \
-            --min-var-freq {params.min_var_freq} \
-            --p-value {params.p_value} \
-            --indel-file {input.indel_vcf} \
-            --output-file {output.vcf_filtered} \
-            2> {log}
-        """
-
-# Extracts only SNV positions from VarScan somatic hc calls for use in bam-readcounts
-rule get_site_list:
-    input:
-        vcf = f"{VARSCAN_PAIRED_OUT}/{{sample}}.snp.Somatic.hc.vcf"
-    output:
-        site_list = f"{VARSCAN_PAIRED_OUT}/{{sample}}.sitelist"
-    shell:
-        """
-        awk 'BEGIN{{FS=OFS="\t"}} !/^#/ {{print $1, $2, $2}}' {input.vcf} > {output.site_list}
-        """
-
-# Used for VarScan fpfilter
-rule bam_readcounts:
-    input:
-        tumor_bam = lambda w: f"{MARKDUP_OUT}/{PAIRED_SAMPLES[str(w.sample)]['tumor']}.bam",
-        vcf = f"{VARSCAN_PAIRED_OUT}/{{sample}}.snp.Somatic.hc.vcf",
-        site_list = f"{VARSCAN_PAIRED_OUT}/{{sample}}.sitelist"
-    output:
-        readcounts = f"{VARSCAN_PAIRED_OUT}/{{sample}}.readcounts"
-    log:
-        f"{VARSCAN_PAIRED_OUT}/{{sample}}.readcounts.log"
-    params:
-        ref = config["bwa"]["idx"],
-        max_depth = 100000,
-        min_mapq = 20
-    conda:
-        "bam-readcount"
-    shell:
-        """
-        bam-readcount \
-          --min-mapping-quality {params.min_mapq} \
-          --max-count {params.max_depth} \
-          --reference-fasta {params.ref} \
-          --site-list {input.site_list} \
-          {input.tumor_bam} > {output.readcounts}
-        """
-
-
-rule varscan_fpfilter_paired:
-    input:
-        readcounts = f"{VARSCAN_PAIRED_OUT}/{{sample}}.readcounts",
-        vcf = f"{VARSCAN_PAIRED_OUT}/{{sample}}.snp.Somatic.hc.vcf"
-    output:
-        vcf = f"{VARSCAN_PAIRED_OUT}/{{sample}}.snp.Somatic.hc.fpfilter.vcf"
-    log:
-        f"{VARSCAN_PAIRED_OUT}/{{sample}}.fpfilter.log"
-    params:
-        min_var_count = 3,
-        min_var_freq  = 0.05,
-        min_read_pos  = 0.10,
-        min_strandedness = 0
-    shell:
-        """
-        java -jar /usr/local/programs/VarScan.jar fpfilter \
-            {input.vcf} \
-            {input.readcounts} \
-            --output-file {output.vcf} \
-            --min-var-count {params.min_var_count} \
-            --min-var-freq {params.min_var_freq} \
-            --min-read-pos {params.min_read_pos} \
-            --min-strandedness {params.min_strandedness} \
-            2> {log}
-        """
-
-# Needed because VarScan does not add contigs to header
-rule varscan_rehead_vcf:
-    input:
-        vcf = f"{VARSCAN_PAIRED_OUT}/{{sample}}.snp.Somatic.hc.fpfilter.vcf"
-    output:
-        vcf_gz = temp(f"{VARSCAN_PAIRED_OUT}/{{sample}}.snp.Somatic.hc.fpfilter.vcf.gz"),
-        vcf_tbi = temp(f"{VARSCAN_PAIRED_OUT}/{{sample}}.snp.Somatic.hc.fpfilter.vcf.gz.tbi"),
-        rehead = temp(f"{VARSCAN_PAIRED_OUT}/{{sample}}.snp.Somatic.hc.fpfilter.rehead.vcf.gz"),
-        rehead_tbi = temp(f"{VARSCAN_PAIRED_OUT}/{{sample}}.snp.Somatic.hc.fpfilter.rehead.vcf.gz.tbi")
-    params:
-        fai = config["bwa"]["fai"]
-    shell:
-        """
-        bcftools view -Oz -o {output.vcf_gz} {input.vcf} && bcftools index -t {output.vcf_gz} 
-        bcftools reheader -f {params.fai} -o {output.rehead} {output.vcf_gz} && \
-        bcftools index -t {output.rehead}
-        """
-
-
-rule varscan_pass_norm_paired:
-    input:
-        vcf = f"{VARSCAN_PAIRED_OUT}/{{sample}}.snp.Somatic.hc.fpfilter.rehead.vcf.gz",
-        vcf_tbi = f"{VARSCAN_PAIRED_OUT}/{{sample}}.snp.Somatic.hc.fpfilter.rehead.vcf.gz.tbi",
-    output:
-        vcf = f"{VARSCAN_PAIRED_OUT}/{{sample}}.pass.vcf.gz",
-        tbi = f"{VARSCAN_PAIRED_OUT}/{{sample}}.pass.vcf.gz.tbi"
-    params:
-        ref = config["bwa"]["idx"],
-        buff = 10000,
-        multi_allele = "-",
-        check_ref = "s"
-    shell:
-        """
-        bcftools view --types 'snps' -f 'PASS' {input.vcf} | \
-        bcftools norm -c {params.check_ref} -m {params.multi_allele} -w {params.buff} -f {params.ref} | \
-        bcftools view -Oz -o {output.vcf} && \
-        bcftools index -t {output.vcf}
-        """
-
-
-rule muse_call_paired:
-    input:
-        tumor = lambda w: f"{MARKDUP_OUT}/{PAIRED_SAMPLES[str(w.sample)]['tumor']}.bam",
-        normal = lambda w: f"{MARKDUP_OUT}/{PAIRED_SAMPLES[str(w.sample)]['normal']}.bam"
-    output:
-        txt = f"{MUSE_PAIRED_OUT}/{{sample}}.MuSE.txt"
-    log:
-        f"{MUSE_PAIRED_OUT}/{{sample}}.call.log"
-    params:
-        ref = config["bwa"]["idx"],
-        out_prefix = f"{MUSE_PAIRED_OUT}/{{sample}}"
-    threads: 
-        8
-    conda:
-        "muse"
-    shell:
-        """
-        MuSE call \
-            -O {params.out_prefix} \
-            -f {params.ref} \
-            -n {threads} \
-            {input.tumor} {input.normal} \
-            2> {log}
-        """
-
-
-rule muse_sump_paired:
-    input:
-        txt = f"{MUSE_PAIRED_OUT}/{{sample}}.MuSE.txt"
-    output:
-        vcf = f"{MUSE_PAIRED_OUT}/{{sample}}.vcf"
-    log:
-        f"{MUSE_PAIRED_OUT}/{{sample}}.sump.log"
-    params:
-        dbsnp = config["muse"]["dbsnp"],
-        mode = "-E"
-    threads:
-        8
-    conda:
-        "muse"
-    shell:
-        """
-        MuSE sump \
-            -I {input.txt} \
-            {params.mode} \
-            -n {threads} \
-            -O {output.vcf} \
-            -D {params.dbsnp} \
-            2> {log}
-        """
-
-
-rule muse_pass_norm_paired:
-    input:
-        vcf = f"{MUSE_PAIRED_OUT}/{{sample}}.vcf"
-    output:
-        vcf = f"{MUSE_PAIRED_OUT}/{{sample}}.pass.vcf.gz",
-        tbi = f"{MUSE_PAIRED_OUT}/{{sample}}.pass.vcf.gz.tbi"
-    params:
-        ref = config["bwa"]["idx"],
-        buff = 10000,
-        multi_allele = "-",
-        check_ref = "s"
-    shell:
-        """
-        bcftools view --types 'snps' -f 'PASS' {input.vcf} | \
-        bcftools norm -c {params.check_ref} -m {params.multi_allele} -w {params.buff} -f {params.ref} | \
-        bcftools view -Oz -o {output.vcf} && \
-        bcftools index -t {output.vcf}
-        """
-
-
-rule mutect2_paired:
-    input:
-        tumor = lambda w: f"{MARKDUP_OUT}/{PAIRED_SAMPLES[str(w.sample)]['tumor']}.bam",
-        normal = lambda w: f"{MARKDUP_OUT}/{PAIRED_SAMPLES[str(w.sample)]['normal']}.bam"
-    output:
-        vcf = f"{MUTECT_PAIRED_OUT}/{{sample}}.vcf.gz",
-        f1r2 = f"{MUTECT_PAIRED_OUT}/{{sample}}.f1r2.tar.gz"
-    params:
-        normal_name = lambda w: PAIRED_SAMPLES[str(w.sample)]['normal'],
-        ref = config["gatk"]["ref"],
-        glr = config["gatk"]["glr"],
-        pon = config["gatk"]["pon"],
-        sec = config["mutect"]["progress_seconds"],
-        java_args = config["java"]["java_args"],
-        tmp_dir = MUTECT_PAIRED_OUT
-    log:
-        f"{MUTECT_PAIRED_OUT}/{{sample}}.log"
-    threads:
-        4
-    shell:
-        "gatk --java-options {params.java_args} Mutect2 "
-          "-I {input.tumor} "
-          "-I {input.normal} "
-          "-O {output.vcf} "
-          "-R {params.ref} "
-          "--tmp-dir {params.tmp_dir} "
-          "--normal {params.normal_name} "
-          "--germline-resource {params.glr} "
-          "--panel-of-normals {params.pon} "
-          "--f1r2-tar-gz {output.f1r2} "
-          "--seconds-between-progress-updates {params.sec} "
-          "--native-pair-hmm-threads {threads} "
-          "--create-output-variant-index true  &> {log}"
-
-
-rule pileup_summary:
+# The markduplicates wrapper does not emit a samtools-style "<bam>.bai" index
+# for a plain (non mate-cigar) run; several downstream rules need one.
+rule index_markdup_bam:
     input:
         f"{MARKDUP_OUT}/{{sample}}.bam"
     output:
+        f"{MARKDUP_OUT}/{{sample}}.bam.bai"
+    shell:
+        "samtools index {input}"
+
+
+# Mutect2 calling/filtering follows the GATK best-practices meta-wrapper
+# (https://snakemake-wrappers.readthedocs.io/en/stable/meta-wrappers/bio/gatk_mutect2_calling.html),
+# extended to cover both tumor-normal paired and tumor-only patients.
+
+def mutect_bams(wildcards):
+    p = PATIENTS[wildcards.patient]
+    bams = [f"{MARKDUP_OUT}/{p['tumor']}.bam"]
+    if p["normal"]:
+        bams.append(f"{MARKDUP_OUT}/{p['normal']}.bam")
+    return bams
+
+def mutect_bais(wildcards):
+    return [f"{b}.bai" for b in mutect_bams(wildcards)]
+
+def mutect_extra(wildcards, threads):
+    p = PATIENTS[wildcards.patient]
+    extra = f"--tumor-sample {p['tumor']} "
+    if p["normal"]:
+        extra += f"--normal-sample {p['normal']} "
+    extra += (
+        f"--native-pair-hmm-threads {threads} "
+        f"--seconds-between-progress-updates {config['mutect']['progress_seconds']}"
+    )
+    return extra
+
+rule mutect2_call:
+    input:
+        fasta = config["ref"]["fasta"],
+        fasta_fai = config["ref"]["fai"],
+        fasta_dict = config["ref"]["dict"],
+        map = mutect_bams,
+        map_idx = mutect_bais,
+        germline = config["gatk"]["glr"],
+        germline_tbi = config["gatk"]["glr"] + ".tbi",
+        pon = config["gatk"]["pon"],
+        pon_tbi = config["gatk"]["pon"] + ".tbi",
+    output:
+        vcf = f"{MUTECT_OUT}/{{patient}}.vcf.gz",
+        f1r2 = f"{MUTECT_OUT}/{{patient}}.f1r2.tar.gz",
+    threads:
+        4
+    resources:
+        mem_mb = 65536
+    params:
+        extra = mutect_extra,
+    log:
+        f"{MUTECT_OUT}/{{patient}}.log"
+    wrapper:
+        "v9.17.1/bio/gatk/mutect"
+
+
+rule gatk_get_pileup_summaries:
+    input:
+        bam = f"{MARKDUP_OUT}/{{sample}}.bam",
+        bai = f"{MARKDUP_OUT}/{{sample}}.bam.bai",
+        intervals = config["gatk"]["snps"],
+        variants = config["gatk"]["snps"],
+        variants_tbi = config["gatk"]["snps"] + ".tbi",
+    output:
         f"{PILEUP_SUMMARY_OUT}/{{sample}}.table"
+    threads:
+        1
+    resources:
+        mem_mb = 8192
     params:
-        common_snps = config["gatk"]["snps"],
-        ref = config["gatk"]["ref"],
-        sec = 120,
-        java_args = config["java"]["java_args"],
-        tmp_dir = PILEUP_SUMMARY_OUT
+        extra = "--seconds-between-progress-updates 120",
     log:
-        f"{PILEUP_SUMMARY_OUT}/{{sample}}.pileupsummary.log"
-    shell:
-        "gatk --java-options {params.java_args} GetPileupSummaries "
-          "-I {input} "
-          "-O {output} "
-          "-R {params.ref} "
-          "-V {params.common_snps} "
-          "-L {params.common_snps} "
-          "--tmp-dir {params.tmp_dir} "
-          "--seconds-between-progress-updates {params.sec} &> {log}"
+        f"{PILEUP_SUMMARY_OUT}/{{sample}}.log"
+    wrapper:
+        "v9.17.1/bio/gatk/getpileupsummaries"
 
 
-rule contamination_paired:
+def contamination_inputs(wildcards):
+    p = PATIENTS[wildcards.patient]
+    inputs = {"tumor": f"{PILEUP_SUMMARY_OUT}/{p['tumor']}.table"}
+    if p["normal"]:
+        inputs["normal"] = f"{PILEUP_SUMMARY_OUT}/{p['normal']}.table"
+    return inputs
+
+rule gatk_calculate_contamination:
     input:
-        tumor = lambda w: f"{PILEUP_SUMMARY_OUT}/{PAIRED_SAMPLES[str(w.sample)]['tumor']}.table",
-        normal = lambda w: f"{PILEUP_SUMMARY_OUT}/{PAIRED_SAMPLES[str(w.sample)]['normal']}.table"
+        unpack(contamination_inputs)
     output:
-        f"{CONTAM_PAIRED_OUT}/{{sample}}.table"
+        f"{CONTAM_OUT}/{{patient}}.table"
+    threads:
+        1
+    resources:
+        mem_mb = 4096
     params:
-        java_args = config["java"]["java_args"],
-        tmp_dir = CONTAM_PAIRED_OUT
+        extra = "",
     log:
-        f"{CONTAM_PAIRED_OUT}/{{sample}}.log"
-    shell:
-        """
-        gatk --java-options {params.java_args} CalculateContamination \
-          --input {input.tumor} \
-          --matched-normal {input.normal} \
-          --output {output} \
-          --tmp-dir {params.tmp_dir} &> {log}
-        """
+        f"{CONTAM_OUT}/{{patient}}.log"
+    wrapper:
+        "v9.17.1/bio/gatk/calculatecontamination"
 
 
-rule filter_mutect_paired:
+rule gatk_learn_read_orientation_model:
     input:
-        vcf = f"{MUTECT_PAIRED_OUT}/{{sample}}.vcf.gz",
-        bias = f"{MUTECT_PAIRED_OUT}/{{sample}}.f1r2.tar.gz",
-        contam = f"{CONTAM_PAIRED_OUT}/{{sample}}.table"
+        f1r2 = f"{MUTECT_OUT}/{{patient}}.f1r2.tar.gz"
     output:
-        vcf = f"{MUTECT_PAIRED_OUT}/{{sample}}.filtered.vcf"
+        f"{ORIENTATION_MODEL_OUT}/{{patient}}.artifacts-prior.tar.gz"
+    threads:
+        1
+    resources:
+        mem_mb = 4096
     params:
-        ref = config["gatk"]['ref'],
-        strategy = config["mutect"]['strategy'],
-        fdr = config["mutect"]['fdr'],
-        alt_reads = config["mutect"]['alt_reads'],
-        read_pos = config["mutect"]['read_pos'],
-        base_qual = config["mutect"]['base_qual'],
-        min_allele = config["mutect"]['min_allele'],
-        tmp_dir = MUTECT_PAIRED_OUT,
-        java_args = config["java"]["java_args"]
+        extra = "",
     log:
-        f"{MUTECT_PAIRED_OUT}/{{sample}}.log"
-    shell:
-        "gatk --java-options {params.java_args} FilterMutectCalls "
-          "-R {params.ref} "
-          "-V {input.vcf} "
-          "-O {output.vcf} "
-          "--threshold-strategy {params.strategy} " 
-          "--false-discovery-rate {params.fdr} "
-          "--unique-alt-read-count {params.alt_reads} " 
-          "--min-median-read-position {params.read_pos} " 
-          "--min-median-base-quality {params.base_qual} "
-          "--min-allele-fraction {params.min_allele} "
-          "--contamination-table {input.contam} "
-          "--tmp-dir {params.tmp_dir} &> {log}"
+        f"{ORIENTATION_MODEL_OUT}/{{patient}}.log"
+    wrapper:
+        "v9.17.1/bio/gatk/learnreadorientationmodel"
 
 
-rule mutect_pass_norm_paired:
+rule filter_mutect_calls:
     input:
-        vcf = f"{MUTECT_PAIRED_OUT}/{{sample}}.filtered.vcf"
+        vcf = f"{MUTECT_OUT}/{{patient}}.vcf.gz",
+        ref = config["ref"]["fasta"],
+        ref_fai = config["ref"]["fai"],
+        ref_dict = config["ref"]["dict"],
+        contamination_table = f"{CONTAM_OUT}/{{patient}}.table",
+        f1r2 = f"{ORIENTATION_MODEL_OUT}/{{patient}}.artifacts-prior.tar.gz",
     output:
-        vcf = f"{MUTECT_PAIRED_OUT}/{{sample}}.pass.vcf.gz",
-        tbi = f"{MUTECT_PAIRED_OUT}/{{sample}}.pass.vcf.gz.tbi"
+        vcf = f"{MUTECT_OUT}/{{patient}}.filtered.vcf.gz"
+    resources:
+        mem_mb = 8192
     params:
-        ref = config["bwa"]["idx"],
+        extra = (
+            f"--threshold-strategy {config['mutect']['strategy']} "
+            f"--false-discovery-rate {config['mutect']['fdr']} "
+            f"--unique-alt-read-count {config['mutect']['alt_reads']} "
+            f"--min-median-read-position {config['mutect']['read_pos']} "
+            f"--min-median-base-quality {config['mutect']['base_qual']} "
+            f"--min-allele-fraction {config['mutect']['min_allele']}"
+        ),
+        java_opts = "",
+    log:
+        f"{MUTECT_OUT}/{{patient}}.filter.log"
+    wrapper:
+        "v9.17.1/bio/gatk/filtermutectcalls"
+
+
+rule mutect_pass_norm:
+    input:
+        vcf = f"{MUTECT_OUT}/{{patient}}.filtered.vcf.gz",
+        ref = config["ref"]["fasta"],
+        ref_fai = config["ref"]["fai"],
+    output:
+        vcf = f"{MUTECT_OUT}/{{patient}}.pass.vcf.gz",
+        tbi = f"{MUTECT_OUT}/{{patient}}.pass.vcf.gz.tbi"
+    params:
         buff = 10000,
         multi_allele = "-",
         check_ref = "s"
     shell:
         """
         bcftools view --types 'snps' -f 'PASS' {input.vcf} | \
-        bcftools norm -c {params.check_ref} -m {params.multi_allele} -w {params.buff} -f {params.ref} | \
+        bcftools norm -c {params.check_ref} -m {params.multi_allele} -w {params.buff} -f {input.ref} | \
         bcftools view -Oz -o {output.vcf} && \
         bcftools index -t {output.vcf}
         """
 
 
-rule consensus_calls:
+# MuSE2 - paired only (no tumor-only mode). Modeled on
+# https://github.com/wwylab/MuSE/blob/master/MuSE.Snakemake/rules/muse2.smk
+
+rule muse_call:
     input:
-        varscan_vcf = f"{VARSCAN_PAIRED_OUT}/{{sample}}.pass.vcf.gz",
-        muse_vcf = f"{MUSE_PAIRED_OUT}/{{sample}}.pass.vcf.gz",
-        mutect_vcf = f"{MUTECT_PAIRED_OUT}/{{sample}}.pass.vcf.gz"
+        tumor = lambda w: f"{MARKDUP_OUT}/{PAIRED_PATIENTS[w.patient]['tumor']}.bam",
+        normal = lambda w: f"{MARKDUP_OUT}/{PAIRED_PATIENTS[w.patient]['normal']}.bam",
+        tumor_bai = lambda w: f"{MARKDUP_OUT}/{PAIRED_PATIENTS[w.patient]['tumor']}.bam.bai",
+        normal_bai = lambda w: f"{MARKDUP_OUT}/{PAIRED_PATIENTS[w.patient]['normal']}.bam.bai",
+        ref = config["ref"]["fasta"],
+        ref_fai = config["ref"]["fai"],
     output:
-        sites_vcf = f"{CONSENSUS_PAIRED_OUT}/{{sample}}/{{sample}}.vcf.gz"
-    params:
-        prefix_dir = f"{CONSENSUS_PAIRED_OUT}/{{sample}}",
-        ref = config["bwa"]["idx"]
-    shell:
-        """
-        # Get the consensus
-        bcftools isec -c all -n=3 {input.varscan_vcf} {input.muse_vcf} {input.mutect_vcf} -p {params.prefix_dir}
-        
-        # Create a regions file to use for subsetting
-        awk 'BEGIN {{OFS="\t"}} {{print $1, $2}}' {params.prefix_dir}/sites.txt > {params.prefix_dir}/regions.txt
-
-        # Select those sites present in all from the Mutect2 file
-        bcftools view -R {params.prefix_dir}/regions.txt -Oz -o {output.sites_vcf} {input.mutect_vcf}
-        bcftools index -t {output.sites_vcf}
-        """
-
-
-rule annotate_consensus:
-    input:
-        cons_vcf = f"{CONSENSUS_PAIRED_OUT}/{{sample}}/{{sample}}.vcf.gz"
-    output:
-        maf = f"{ANNOTATED_PAIRED_OUT}/{{sample}}.maf"
-    log:
-        f"{ANNOTATED_PAIRED_OUT}/{{sample}}.log"
-    params:
-        data_source = config["gatk"]["data_source"],
-        ref = config["bwa"]["idx"]
-    shell:
-        """
-        gatk Funcotator \
-            --data-sources-path {params.data_source} \
-            --output {output.maf} \
-            --output-file-format MAF \
-            --ref-version hg38 \
-            --reference {params.ref} \
-            --variant {input.cons_vcf} &> {log}
-        """
-
-
-rule cnvkit_paired:
-    input:
-        tumors = expand(f"{MARKDUP_OUT}/{{sample}}_tumor.bam", sample=PAIRED_SAMPLES.keys()),
-        normals = expand(f"{MARKDUP_OUT}/{{sample}}_normal.bam", sample=PAIRED_SAMPLES.keys())
-    output:
-        cnn = f"{CNVKIT_PAIRED_OUT}/reference.cnn"
-    params:
-        baits = config["cnvkit"]["baits"],
-        ref = config["bwa"]["idx"],
-        method = config["cnvkit"]["method"],
-        out_dir = CNVKIT_PAIRED_OUT
+        txt = f"{MUSE_PAIRED_OUT}/{{patient}}.MuSE.txt"
     threads:
         8
     conda:
-        "cnvkit"
+        "muse"
+    params:
+        out_prefix = f"{MUSE_PAIRED_OUT}/{{patient}}"
+    log:
+        f"{MUSE_PAIRED_OUT}/{{patient}}.call.log"
     shell:
         """
-        cnvkit.py batch {input.tumors} \
-            --normal {input.normals} \
-            --targets {params.baits} \
-            --fasta {params.ref} \
-            --output-reference {output.cnn} \
-            --output-dir {params.out_dir} \
-            --processes {threads} \
-            --method {params.method} \
-            --drop-low-coverage \
-            --diagram \
-            --scatter
+        MuSE call -O {params.out_prefix} -f {input.ref} -n {threads} {input.tumor} {input.normal} 2> {log}
         """
+
+
+rule muse_sump:
+    input:
+        txt = f"{MUSE_PAIRED_OUT}/{{patient}}.MuSE.txt",
+        dbsnp = config["muse"]["dbsnp"],
+        dbsnp_tbi = config["muse"]["dbsnp"] + ".tbi",
+    output:
+        vcf = f"{MUSE_PAIRED_OUT}/{{patient}}.vcf.gz"
+    threads:
+        8
+    conda:
+        "muse"
+    params:
+        prefix = f"{MUSE_PAIRED_OUT}/{{patient}}"
+    log:
+        f"{MUSE_PAIRED_OUT}/{{patient}}.sump.log"
+    shell:
+        """
+        MuSE sump -I {input.txt} -E -n {threads} -O {params.prefix}.vcf -D {input.dbsnp} 2> {log}
+        rm -f {output.vcf}
+        bgzip {params.prefix}.vcf
+        tabix -p vcf {output.vcf}
+        """
+
+
+rule muse_pass_norm:
+    input:
+        vcf = f"{MUSE_PAIRED_OUT}/{{patient}}.vcf.gz",
+        ref = config["ref"]["fasta"],
+        ref_fai = config["ref"]["fai"],
+    output:
+        vcf = f"{MUSE_PAIRED_OUT}/{{patient}}.pass.vcf.gz",
+        tbi = f"{MUSE_PAIRED_OUT}/{{patient}}.pass.vcf.gz.tbi"
+    params:
+        buff = 10000,
+        multi_allele = "-",
+        check_ref = "s"
+    shell:
+        """
+        bcftools view --types 'snps' -f 'PASS' {input.vcf} | \
+        bcftools norm -c {params.check_ref} -m {params.multi_allele} -w {params.buff} -f {input.ref} | \
+        bcftools view -Oz -o {output.vcf} && \
+        bcftools index -t {output.vcf}
+        """
+
+
+# Strelka2 - paired only, its somatic workflow requires a matched normal
+# (https://snakemake-wrappers.readthedocs.io/en/stable/wrappers/bio/strelka/somatic.html)
+
+rule strelka_somatic:
+    input:
+        tumor = lambda w: f"{MARKDUP_OUT}/{PAIRED_PATIENTS[w.patient]['tumor']}.bam",
+        tumor_index = lambda w: f"{MARKDUP_OUT}/{PAIRED_PATIENTS[w.patient]['tumor']}.bam.bai",
+        normal = lambda w: f"{MARKDUP_OUT}/{PAIRED_PATIENTS[w.patient]['normal']}.bam",
+        normal_index = lambda w: f"{MARKDUP_OUT}/{PAIRED_PATIENTS[w.patient]['normal']}.bam.bai",
+        fasta = config["ref"]["fasta"],
+        fasta_index = config["ref"]["fai"],
+    output:
+        directory(f"{STRELKA_PAIRED_OUT}/{{patient}}")
+    threads:
+        8
+    params:
+        config_extra = config["strelka"]["config_extra"],
+        run_extra = config["strelka"]["run_extra"],
+    log:
+        f"{STRELKA_PAIRED_OUT}/{{patient}}.log"
+    wrapper:
+        "v9.17.1/bio/strelka/somatic"
+
+
+rule strelka_pass_norm:
+    input:
+        vcf_dir = f"{STRELKA_PAIRED_OUT}/{{patient}}",
+        ref = config["ref"]["fasta"],
+        ref_fai = config["ref"]["fai"],
+    output:
+        vcf = f"{STRELKA_PAIRED_OUT}/{{patient}}.pass.vcf.gz",
+        tbi = f"{STRELKA_PAIRED_OUT}/{{patient}}.pass.vcf.gz.tbi"
+    params:
+        buff = 10000,
+        multi_allele = "-",
+        check_ref = "s",
+        raw_vcf = f"{STRELKA_PAIRED_OUT}/{{patient}}/results/variants/somatic.snvs.vcf.gz"
+    shell:
+        """
+        bcftools view --types 'snps' -f 'PASS' {params.raw_vcf} | \
+        bcftools norm -c {params.check_ref} -m {params.multi_allele} -w {params.buff} -f {input.ref} | \
+        bcftools view -Oz -o {output.vcf} && \
+        bcftools index -t {output.vcf}
+        """
+
+
+# DeepSomatic - runs for both paired and tumor-only patients (unlike
+# MuSE2/Strelka2), via singularity since it's only published as a container
+# (https://github.com/google/deepsomatic). Model type and --regions follow
+# whichever of the 4 linked case studies matches this patient:
+#   paired + WES   -> https://github.com/google/deepsomatic/blob/r1.10/docs/deepsomatic-case-study-wes.md            (model_type=WES)
+#   paired + WGS   -> https://github.com/google/deepsomatic/blob/r1.10/docs/deepsomatic-case-study-wgs.md            (model_type=WGS)
+#   tumor-only WES -> https://github.com/google/deepsomatic/blob/r1.10/docs/deepsomatic-case-study-ffpe-wes-tumor-only.md (model_type=FFPE_WES_TUMOR_ONLY)
+#   tumor-only WGS -> https://github.com/google/deepsomatic/blob/r1.10/docs/deepsomatic-case-study-wgs-tumor-only.md      (model_type=WGS_TUMOR_ONLY)
+# config["deepsomatic"]["assay_type"] ("WES" or "WGS") picks between them.
+
+def deepsomatic_input_bams(wildcards):
+    p = PATIENTS[wildcards.patient]
+    files = {
+        "tumor": f"{MARKDUP_OUT}/{p['tumor']}.bam",
+        "tumor_bai": f"{MARKDUP_OUT}/{p['tumor']}.bam.bai",
+    }
+    if p["normal"]:
+        files["normal"] = f"{MARKDUP_OUT}/{p['normal']}.bam"
+        files["normal_bai"] = f"{MARKDUP_OUT}/{p['normal']}.bam.bai"
+    return files
+
+def deepsomatic_model_type(wildcards):
+    p = PATIENTS[wildcards.patient]
+    assay = config["deepsomatic"]["assay_type"]
+    if p["normal"]:
+        return assay  # "WES" or "WGS"
+    return "FFPE_WES_TUMOR_ONLY" if assay == "WES" else "WGS_TUMOR_ONLY"
+
+def deepsomatic_extra(wildcards, input, threads):
+    p = PATIENTS[wildcards.patient]
+    extra = (
+        f"--model_type={deepsomatic_model_type(wildcards)} "
+        f"--reads_tumor={input.tumor} "
+        f"--sample_name_tumor={p['tumor']} "
+        f"--num_shards={threads}"
+    )
+    if p["normal"]:
+        extra += f" --reads_normal={input.normal} --sample_name_normal={p['normal']}"
+    else:
+        # No matched normal to filter germline/artifact calls against.
+        extra += " --use_default_pon_filtering=true"
+    if config["deepsomatic"]["assay_type"] == "WES":
+        extra += f" --regions={config['cnvkit']['baits']}"
+    return extra
+
+# Directories singularity needs to see: the pipeline's working/output tree,
+# this Snakefile's own directory (resources/ downloads live there), and
+# wherever the WES baits BED lives (may be outside both of the above).
+DEEPSOMATIC_BIND_PATHS = sorted({
+    os.path.abspath(WORK_DIR),
+    os.path.abspath("."),
+    os.path.dirname(os.path.abspath(config["cnvkit"]["baits"])),
+    "/usr/lib/locale/",
+})
+
+rule deepsomatic_call:
+    input:
+        unpack(deepsomatic_input_bams),
+        ref = config["ref"]["fasta"],
+        ref_fai = config["ref"]["fai"],
+    output:
+        vcf = f"{DEEPSOMATIC_OUT}/{{patient}}.vcf.gz"
+    threads:
+        16
+    params:
+        extra = deepsomatic_extra,
+        bind = " ".join(f"-B {p}" for p in DEEPSOMATIC_BIND_PATHS),
+        bin_version = config["deepsomatic"]["bin_version"],
+        intermediate_dir = f"{DEEPSOMATIC_OUT}/{{patient}}.intermediate",
+        logging_dir = f"{DEEPSOMATIC_OUT}/{{patient}}.logs",
+    log:
+        f"{DEEPSOMATIC_OUT}/{{patient}}.log"
+    shell:
+        """
+        mkdir -p {params.intermediate_dir} {params.logging_dir}
+        singularity run {params.bind} \
+            docker://google/deepsomatic:{params.bin_version} \
+            run_deepsomatic \
+            {params.extra} \
+            --ref={input.ref} \
+            --output_vcf={output.vcf} \
+            --intermediate_results_dir={params.intermediate_dir} \
+            --logging_dir={params.logging_dir} &> {log}
+        """
+
+
+rule deepsomatic_pass_norm:
+    input:
+        vcf = f"{DEEPSOMATIC_OUT}/{{patient}}.vcf.gz",
+        ref = config["ref"]["fasta"],
+        ref_fai = config["ref"]["fai"],
+    output:
+        vcf = f"{DEEPSOMATIC_OUT}/{{patient}}.pass.vcf.gz",
+        tbi = f"{DEEPSOMATIC_OUT}/{{patient}}.pass.vcf.gz.tbi"
+    params:
+        buff = 10000,
+        multi_allele = "-",
+        check_ref = "s"
+    shell:
+        """
+        bcftools view --types 'snps' -f 'PASS' {input.vcf} | \
+        bcftools norm -c {params.check_ref} -m {params.multi_allele} -w {params.buff} -f {input.ref} | \
+        bcftools view -Oz -o {output.vcf} && \
+        bcftools index -t {output.vcf}
+        """
+
+
+# Consensus -------------------------------------------------------------------
+# Paired patients: sites called PASS by at least config["consensus"]["min_callers_paired"]
+# of the 4 callers (Mutect2, MuSE2, Strelka2, DeepSomatic) - defaults to 3/4,
+# since most runs of this pipeline are WES tumor-normal pairs and requiring
+# unanimous 4/4 agreement was too strict in practice.
+# Tumor-only patients: MuSE2/Strelka2 don't run (see their rules above), so
+# consensus is between Mutect2 and DeepSomatic only, out of
+# config["consensus"]["min_callers_tumor_only"] (defaults to 2/2, i.e. both).
+# bcftools isec -n+N means "at least N", so both settings can range from 1
+# (union - any caller) up to the number of callers run for that patient
+# (intersection - all must agree).
+
+rule consensus_calls_paired:
+    input:
+        mutect_vcf = f"{MUTECT_OUT}/{{patient}}.pass.vcf.gz",
+        muse_vcf = f"{MUSE_PAIRED_OUT}/{{patient}}.pass.vcf.gz",
+        strelka_vcf = f"{STRELKA_PAIRED_OUT}/{{patient}}.pass.vcf.gz",
+        deepsomatic_vcf = f"{DEEPSOMATIC_OUT}/{{patient}}.pass.vcf.gz",
+    output:
+        vcf = f"{CONSENSUS_OUT}/{{patient}}.vcf.gz",
+        tbi = f"{CONSENSUS_OUT}/{{patient}}.vcf.gz.tbi"
+    wildcard_constraints:
+        patient = _alternation_or_no_match(PAIRED_PATIENTS.keys())
+    params:
+        prefix_dir = f"{CONSENSUS_OUT}/{{patient}}_isec",
+        min_callers = config["consensus"]["min_callers_paired"],
+    shell:
+        """
+        bcftools isec -c all -n+{params.min_callers} {input.mutect_vcf} {input.muse_vcf} {input.strelka_vcf} {input.deepsomatic_vcf} -p {params.prefix_dir}
+
+        awk 'BEGIN {{OFS="\t"}} {{print $1, $2}}' {params.prefix_dir}/sites.txt > {params.prefix_dir}/regions.txt
+
+        bcftools view -R {params.prefix_dir}/regions.txt -Oz -o {output.vcf} {input.mutect_vcf}
+        bcftools index -t {output.vcf}
+        """
+
+
+rule consensus_calls_tumor_only:
+    input:
+        mutect_vcf = f"{MUTECT_OUT}/{{patient}}.pass.vcf.gz",
+        deepsomatic_vcf = f"{DEEPSOMATIC_OUT}/{{patient}}.pass.vcf.gz",
+    output:
+        vcf = f"{CONSENSUS_OUT}/{{patient}}.vcf.gz",
+        tbi = f"{CONSENSUS_OUT}/{{patient}}.vcf.gz.tbi"
+    wildcard_constraints:
+        patient = _alternation_or_no_match(TUMOR_ONLY_PATIENTS.keys())
+    params:
+        prefix_dir = f"{CONSENSUS_OUT}/{{patient}}_isec",
+        min_callers = config["consensus"]["min_callers_tumor_only"],
+    shell:
+        """
+        bcftools isec -c all -n+{params.min_callers} {input.mutect_vcf} {input.deepsomatic_vcf} -p {params.prefix_dir}
+
+        awk 'BEGIN {{OFS="\t"}} {{print $1, $2}}' {params.prefix_dir}/sites.txt > {params.prefix_dir}/regions.txt
+
+        bcftools view -R {params.prefix_dir}/regions.txt -Oz -o {output.vcf} {input.mutect_vcf}
+        bcftools index -t {output.vcf}
+        """
+
+
+# VEP annotation (https://snakemake-wrappers.readthedocs.io/en/stable/wrappers/bio/vep/annotate.html)
+
+rule vep_plugins_dir:
+    output:
+        directory(f"{RESOURCES_OUT}/vep_plugins")
+    shell:
+        "mkdir -p {output}"
+
+
+rule vep_annotate:
+    input:
+        calls = f"{CONSENSUS_OUT}/{{patient}}.vcf.gz",
+        cache = config["vep"]["cache"],
+        plugins = f"{RESOURCES_OUT}/vep_plugins",
+        fasta = config["ref"]["fasta"],
+        fai = config["ref"]["fai"],
+    output:
+        calls = f"{ANNOTATED_OUT}/{{patient}}.annotated.vcf.gz",
+        stats = f"{ANNOTATED_OUT}/{{patient}}.stats.html"
+    threads:
+        4
+    params:
+        plugins = config["vep"]["plugins"],
+        extra = config["vep"]["extra"],
+    log:
+        f"{ANNOTATED_OUT}/{{patient}}.log"
+    wrapper:
+        "v9.17.1/bio/vep/annotate"
+
+
+# CNVkit (https://snakemake-wrappers.readthedocs.io/en/stable/wrappers/bio/cnvkit/batch.html)
+# A single pooled reference is built from all available normals and reused
+# for every tumor sample (including tumor-only patients).
+
+rule cnvkit_access:
+    input:
+        fasta = config["ref"]["fasta"],
+        fasta_fai = config["ref"]["fai"],
+    output:
+        f"{RESOURCES_OUT}/access.bed"
+    conda:
+        "cnvkit"
+    log:
+        f"{RESOURCES_OUT}/cnvkit_access.log"
+    shell:
+        "cnvkit.py access {input.fasta} -o {output} &> {log}"
+
+
+rule cnvkit_target:
+    input:
+        config["cnvkit"]["baits"]
+    output:
+        f"{RESOURCES_OUT}/target.bed"
+    conda:
+        "cnvkit"
+    log:
+        f"{RESOURCES_OUT}/cnvkit_target.log"
+    shell:
+        "cnvkit.py target {input} --split -o {output} &> {log}"
+
+
+rule cnvkit_antitarget:
+    input:
+        target = f"{RESOURCES_OUT}/target.bed",
+        access = f"{RESOURCES_OUT}/access.bed",
+    output:
+        f"{RESOURCES_OUT}/antitarget.bed"
+    conda:
+        "cnvkit"
+    log:
+        f"{RESOURCES_OUT}/cnvkit_antitarget.log"
+    shell:
+        "cnvkit.py antitarget {input.target} -g {input.access} -o {output} &> {log}"
+
+
+rule cnvkit_batch_build_reference:
+    input:
+        bam = expand(f"{MARKDUP_OUT}/{{sample}}.bam", sample=ALL_NORMAL_SAMPLES),
+        bai = expand(f"{MARKDUP_OUT}/{{sample}}.bam.bai", sample=ALL_NORMAL_SAMPLES),
+        fasta = config["ref"]["fasta"],
+        fasta_fai = config["ref"]["fai"],
+        target = f"{RESOURCES_OUT}/target.bed",
+        antitarget = f"{RESOURCES_OUT}/antitarget.bed",
+    output:
+        reference = f"{CNVKIT_OUT}/reference.cnn"
+    threads:
+        8
+    resources:
+        mem_mb = 16384
+    params:
+        method = config["cnvkit"]["method"],
+        extra = "",
+    log:
+        f"{CNVKIT_OUT}/reference.log"
+    wrapper:
+        "v9.17.1/bio/cnvkit/batch"
+
+
+rule cnvkit_batch:
+    input:
+        bam = lambda w: [f"{MARKDUP_OUT}/{PATIENTS[w.patient]['tumor']}.bam"],
+        bai = lambda w: [f"{MARKDUP_OUT}/{PATIENTS[w.patient]['tumor']}.bam.bai"],
+        reference = f"{CNVKIT_OUT}/reference.cnn",
+    output:
+        antitarget_coverage = f"{CNVKIT_OUT}/{{patient}}.antitargetcoverage.cnn",
+        bins = f"{CNVKIT_OUT}/{{patient}}.bintest.cns",
+        regions = f"{CNVKIT_OUT}/{{patient}}.cnr",
+        segments = f"{CNVKIT_OUT}/{{patient}}.cns",
+        segments_called = f"{CNVKIT_OUT}/{{patient}}.call.cns",
+        target_coverage = f"{CNVKIT_OUT}/{{patient}}.targetcoverage.cnn",
+    threads:
+        4
+    resources:
+        mem_mb = 8192
+    params:
+        method = config["cnvkit"]["method"],
+        extra = "",
+    log:
+        f"{CNVKIT_OUT}/{{patient}}.log"
+    wrapper:
+        "v9.17.1/bio/cnvkit/batch"
