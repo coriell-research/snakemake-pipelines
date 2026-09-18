@@ -6,7 +6,7 @@ import pandas as pd
 
 configfile: "config.yaml"
 
-WORK_DIR = "../data"
+WORK_DIR = "../results"
 FASTP_OUT = f"{WORK_DIR}/fastp"
 BWA_OUT = f"{WORK_DIR}/bwa"
 MERGE_OUT = f"{WORK_DIR}/merge"
@@ -87,6 +87,8 @@ wildcard_constraints:
 #  - Project-specific resources (WES baits, cancer hotspots) committed
 #    straight into this repo, fetched via raw.githubusercontent.com
 #    (cnvkit.baits, hotspots.path)
+#  - The VEP cache, via the bio/vep/cache wrapper (see rule vep_cache below,
+#    next to its consumer rule vep_annotate)
 # config.yaml points those keys directly at these paths, so any rule needing
 # them pulls the corresponding download in automatically - a plain
 # `snakemake` run downloads whatever is missing. This pipeline does not
@@ -94,6 +96,7 @@ wildcard_constraints:
 # prebuilt one already sitting next to the fasta in the GATK bucket.
 
 DOWNLOAD_DIR = "resources"
+VEP_CACHE_OUT = f"{DOWNLOAD_DIR}/vep/cache"
 GATK_REF_BUCKET = "https://storage.googleapis.com/gcp-public-data--broad-references/hg38/v0"
 GATK_MUTECT_BUCKET = "https://storage.googleapis.com/gatk-best-practices/somatic-hg38"
 
@@ -190,11 +193,13 @@ rule unzip_baits:
         "gunzip -c {input} > {output}"
 
 
-# Convenience target to pre-fetch everything (GATK + repo resources) in one go.
+# Convenience target to pre-fetch everything (GATK + repo resources + VEP
+# cache) in one go.
 rule download_resources:
     input:
         expand(f"{DOWNLOAD_DIR}/{{resource}}", resource=list(GATK_RESOURCE_URLS.keys()) + list(REPO_RESOURCE_URLS.keys())),
         f"{DOWNLOAD_DIR}/agilent-sure-select-v6-all-exons_S07604514_Padded.bed",
+        VEP_CACHE_OUT,
 
 
 rule fastp:
@@ -742,6 +747,25 @@ rule consensus_calls_tumor_only:
 
 
 # VEP annotation (https://snakemake-wrappers.readthedocs.io/en/stable/wrappers/bio/vep/annotate.html)
+# Cache is downloaded via the bio/vep/cache wrapper
+# (https://snakemake-wrappers.readthedocs.io/en/stable/wrappers/bio/vep/cache.html)
+# into DOWNLOAD_DIR (VEP_CACHE_OUT, defined up in the Resource download
+# section), so no local cache path needs to be specified in config.yaml.
+
+rule vep_cache:
+    output:
+        directory(VEP_CACHE_OUT)
+    params:
+        species = config["vep"]["species"],
+        build = config["vep"]["build"],
+        release = config["vep"]["release"],
+    log:
+        f"{DOWNLOAD_DIR}/vep/cache.log"
+    cache:
+        "omit-software"
+    wrapper:
+        "v9.17.1/bio/vep/cache"
+
 
 rule vep_plugins_dir:
     output:
@@ -753,7 +777,7 @@ rule vep_plugins_dir:
 rule vep_annotate:
     input:
         calls = f"{CONSENSUS_OUT}/{{patient}}.vcf.gz",
-        cache = config["vep"]["cache"],
+        cache = VEP_CACHE_OUT,
         plugins = f"{RESOURCES_OUT}/vep_plugins",
         fasta = config["ref"]["fasta"],
         fai = config["ref"]["fai"],

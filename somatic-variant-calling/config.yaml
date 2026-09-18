@@ -57,8 +57,11 @@ consensus:
   min_callers_tumor_only: 2
 
 vep:
-  # Existing local offline cache (single species/build: homo_sapiens/115_GRCh38)
-  cache: "/usr/local/programs/ensembl-vep/cache"
+  # Cache is downloaded automatically via the bio/vep/cache wrapper (see rule
+  # vep_cache) into resources/vep/cache - no local cache path needed.
+  species: "homo_sapiens"
+  build: "GRCh38"
+  release: 115
   # No plugins configured by default; add plugin names here (and matching
   # aux-file inputs in the Snakefile) as needed.
   plugins: []
