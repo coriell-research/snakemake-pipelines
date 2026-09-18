@@ -1,0 +1,232 @@
+import os
+import pandas as pd
+from snakemake.exceptions import WorkflowError
+from snakemake.utils import validate
+
+configfile: "config.yaml"
+validate(config, "schemas/config.schema.yaml")
+
+
+LANES = pd.read_csv("samples.csv", sep=",")
+validate(LANES, "schemas/samples.schema.yaml")
+
+LANE_KEY_COLS = ["sample_name", "read1", "read2"]
+if LANES.duplicated(subset=LANE_KEY_COLS).any():
+    dupes = LANES.loc[LANES.duplicated(subset=LANE_KEY_COLS), LANE_KEY_COLS].to_dict("records")
+    raise WorkflowError(
+        f"Duplicate lane entries in samples.csv (identical sample_name/read1/read2): {dupes}"
+    )
+
+for _, row in LANES.iterrows():
+    for col in ("read1", "read2"):
+        if not os.path.isfile(row[col]):
+            raise WorkflowError(f"{col} for sample '{row['sample_name']}' not found: {row[col]}")
+
+# one or more rows per sample_name are allowed (one row per lane); lanes are
+# merged per-sample by rule merge_lanes before any trimming/alignment happens.
+# samples with only one lane skip merge_lanes entirely (see merged_or_raw_input below).
+SAMPLES_LIST = LANES["sample_name"].drop_duplicates().tolist()
+LANE_R1 = LANES.groupby("sample_name")["read1"].apply(list).to_dict()
+LANE_R2 = LANES.groupby("sample_name")["read2"].apply(list).to_dict()
+
+WORK_DIR = config.get("work_dir", "../data")
+MERGED_OUT = f"{WORK_DIR}/merged"
+TRIM_OUT = f"{WORK_DIR}/trim_galore"
+BISMARK_OUT = f"{WORK_DIR}/bismark"
+METH_OUT = f"{WORK_DIR}/methylation_extraction"
+REPORT_OUT = f"{WORK_DIR}/bismark_report"
+MULTIQC_OUT = f"{WORK_DIR}/multiqc"
+LOG_DIR = f"{WORK_DIR}/logs"
+
+# strand-specific context files bismark_methylation_extractor produces by
+# default (non-comprehensive, directional) for each sample.
+METH_CONTEXTS = ["CpG_OT", "CpG_OB", "CHG_OT", "CHG_OB", "CHH_OT", "CHH_OB"]
+
+
+def merged_or_raw_input(lane_paths, mate):
+    """Input function for the first per-sample processing rule: returns the
+    raw fastq directly for single-lane samples, or rule merge_lanes' merged
+    output for multi-lane samples, so single-lane samples never pay for a
+    redundant copy.
+    """
+
+    def _input(wildcards):
+        sample_lanes = lane_paths[wildcards.sample]
+        if len(sample_lanes) == 1:
+            return sample_lanes[0]
+        return f"{MERGED_OUT}/{wildcards.sample}.merged.{mate}.fq.gz"
+
+    return _input
+
+
+rule all:
+    input:
+        f"{MULTIQC_OUT}/multiqc_report.html",
+        expand(f"{REPORT_OUT}/{{sample}}_bismark_report.html", sample=SAMPLES_LIST),
+        expand(f"{METH_OUT}/{{sample}}_pe.CX_report.txt.gz", sample=SAMPLES_LIST)
+
+
+rule merge_lanes:
+    input:
+        r1 = lambda w: LANE_R1[w.sample],
+        r2 = lambda w: LANE_R2[w.sample]
+    output:
+        r1_out = temp(f"{MERGED_OUT}/{{sample}}.merged.1.fq.gz"),
+        r2_out = temp(f"{MERGED_OUT}/{{sample}}.merged.2.fq.gz")
+    log:
+        f"{LOG_DIR}/merge_lanes/{{sample}}.log"
+    shell:
+        """
+        cat {input.r1} > {output.r1_out} 2> {log}
+        cat {input.r2} > {output.r2_out} 2>> {log}
+        """
+
+
+rule trim_galore:
+    input:
+        r1 = merged_or_raw_input(LANE_R1, 1),
+        r2 = merged_or_raw_input(LANE_R2, 2)
+    output:
+        r1_out = temp(f"{TRIM_OUT}/{{sample}}_val_1.fq.gz"),
+        r2_out = temp(f"{TRIM_OUT}/{{sample}}_val_2.fq.gz"),
+        report1 = f"{TRIM_OUT}/{{sample}}_R1_trimming_report.txt",
+        report2 = f"{TRIM_OUT}/{{sample}}_R2_trimming_report.txt",
+        r1_fastqc_html = f"{TRIM_OUT}/{{sample}}_val_1_fastqc.html",
+        r1_fastqc_zip = f"{TRIM_OUT}/{{sample}}_val_1_fastqc.zip",
+        r2_fastqc_html = f"{TRIM_OUT}/{{sample}}_val_2_fastqc.html",
+        r2_fastqc_zip = f"{TRIM_OUT}/{{sample}}_val_2_fastqc.zip"
+    log:
+        f"{LOG_DIR}/trim_galore/{{sample}}.log"
+    params:
+        outdir = TRIM_OUT,
+        extra = config.get("trim_galore", {}).get("extra_params", "")
+    threads:
+        config.get("threads", {}).get("trim_galore", 4)
+    conda:
+        "envs/trim_galore.yaml"
+    shell:
+        """
+        trim_galore --rrbs \
+            --paired \
+            --fastqc \
+            --basename {wildcards.sample} \
+            --cores {threads} \
+            --output_dir {params.outdir} \
+            {params.extra} \
+            {input.r1} {input.r2} &> {log}
+        mv {params.outdir}/$(basename {input.r1})_trimming_report.txt {output.report1}
+        mv {params.outdir}/$(basename {input.r2})_trimming_report.txt {output.report2}
+        """
+
+
+rule bismark:
+    input:
+        r1 = f"{TRIM_OUT}/{{sample}}_val_1.fq.gz",
+        r2 = f"{TRIM_OUT}/{{sample}}_val_2.fq.gz"
+    output:
+        bam = f"{BISMARK_OUT}/{{sample}}_pe.bam",
+        report = f"{BISMARK_OUT}/{{sample}}_PE_report.txt"
+    log:
+        f"{LOG_DIR}/bismark/{{sample}}.log"
+    params:
+        genome_dir = config["bismark"]["genome_dir"],
+        outdir = BISMARK_OUT,
+        extra = config.get("bismark", {}).get("extra_params", "")
+    threads:
+        config.get("threads", {}).get("bismark", 4)
+    conda:
+        "envs/bismark.yaml"
+    shell:
+        """
+        bismark --genome {params.genome_dir} \
+            -1 {input.r1} \
+            -2 {input.r2} \
+            --basename {wildcards.sample} \
+            -p {threads} \
+            --output_dir {params.outdir} \
+            {params.extra} &> {log}
+        """
+
+
+rule bismark_methylation_extractor:
+    input:
+        bam = f"{BISMARK_OUT}/{{sample}}_pe.bam"
+    output:
+        splitting_report = f"{METH_OUT}/{{sample}}_pe_splitting_report.txt",
+        mbias = f"{METH_OUT}/{{sample}}_pe.M-bias.txt",
+        contexts = expand(f"{METH_OUT}/{{ctx}}_{{{{sample}}}}_pe.txt.gz", ctx=METH_CONTEXTS),
+        cx_report = f"{METH_OUT}/{{sample}}_pe.CX_report.txt.gz",
+        coverage = f"{METH_OUT}/{{sample}}_pe.bismark.cov.gz",
+        bedgraph = f"{METH_OUT}/{{sample}}_pe.bedGraph.gz"
+    log:
+        f"{LOG_DIR}/bismark_methylation_extractor/{{sample}}.log"
+    params:
+        outdir = METH_OUT,
+        genome_dir = config["bismark"]["genome_dir"]
+    threads:
+        config.get("threads", {}).get("bismark_methylation_extractor", 4)
+    conda:
+        "envs/bismark.yaml"
+    shell:
+        """
+        bismark_methylation_extractor \
+            --paired-end \
+            --gzip \
+            --cytosine_report \
+            --CX \
+            --genome_folder {params.genome_dir} \
+            --multicore {threads} \
+            --output_dir {params.outdir} \
+            {input.bam} &> {log}
+        # bismark deletes any of the six context/strand files above that end up
+        # with zero calls (e.g. no CHH coverage); touch them back into existence
+        # (empty) so this rule's declared outputs are always produced.
+        touch {output.contexts}
+        """
+
+
+rule bismark_report:
+    input:
+        alignment_report = f"{BISMARK_OUT}/{{sample}}_PE_report.txt",
+        splitting_report = f"{METH_OUT}/{{sample}}_pe_splitting_report.txt",
+        mbias_report = f"{METH_OUT}/{{sample}}_pe.M-bias.txt"
+    output:
+        html = f"{REPORT_OUT}/{{sample}}_bismark_report.html"
+    log:
+        f"{LOG_DIR}/bismark_report/{{sample}}.log"
+    params:
+        outdir = REPORT_OUT
+    conda:
+        "envs/bismark.yaml"
+    shell:
+        """
+        bismark2report \
+            --alignment_report {input.alignment_report} \
+            --splitting_report {input.splitting_report} \
+            --mbias_report {input.mbias_report} \
+            -o {wildcards.sample}_bismark_report.html \
+            --dir {params.outdir} &> {log}
+        """
+
+
+rule multiqc:
+    input:
+        expand(f"{TRIM_OUT}/{{sample}}_val_1_fastqc.zip", sample=SAMPLES_LIST),
+        expand(f"{TRIM_OUT}/{{sample}}_val_2_fastqc.zip", sample=SAMPLES_LIST),
+        expand(f"{TRIM_OUT}/{{sample}}_R1_trimming_report.txt", sample=SAMPLES_LIST),
+        expand(f"{TRIM_OUT}/{{sample}}_R2_trimming_report.txt", sample=SAMPLES_LIST),
+        expand(f"{BISMARK_OUT}/{{sample}}_PE_report.txt", sample=SAMPLES_LIST),
+        expand(f"{METH_OUT}/{{sample}}_pe_splitting_report.txt", sample=SAMPLES_LIST),
+        expand(f"{METH_OUT}/{{sample}}_pe.M-bias.txt", sample=SAMPLES_LIST)
+    output:
+        html_report = f"{MULTIQC_OUT}/multiqc_report.html",
+        data_dir = directory(f"{MULTIQC_OUT}/multiqc_data")
+    log:
+        f"{LOG_DIR}/multiqc/multiqc.log"
+    params:
+        search_dirs = f"{TRIM_OUT} {BISMARK_OUT} {METH_OUT}",
+        output_dir = MULTIQC_OUT
+    conda:
+        "envs/multiqc.yaml"
+    shell:
+        "multiqc --force {params.search_dirs} -o {params.output_dir} &> {log}"

@@ -1,0 +1,46 @@
+$schema: "https://json-schema.org/draft/2020-12/schema"
+description: Schema for rrbs-pe config.yaml
+type: object
+additionalProperties: false
+required:
+  - bismark
+properties:
+  work_dir:
+    type: string
+
+  threads:
+    type: object
+    additionalProperties: false
+    properties:
+      trim_galore:
+        type: integer
+        minimum: 1
+      bismark:
+        type: integer
+        minimum: 1
+      bismark_methylation_extractor:
+        type: integer
+        minimum: 1
+
+  trim_galore:
+    type: object
+    additionalProperties: false
+    properties:
+      extra_params:
+        type: string
+
+  bismark:
+    type: object
+    additionalProperties: false
+    required: [genome_dir]
+    properties:
+      genome_dir:
+        type: string
+        minLength: 1
+      extra_params:
+        type: string
+
+  bismark_methylation_extractor:
+    type: object
+    additionalProperties: false
+    properties: {}

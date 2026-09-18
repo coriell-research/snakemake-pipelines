@@ -1,0 +1,11 @@
+channels:
+  - bioconda
+  - conda-forge
+dependencies:
+  # must match the Bismark version used to build the genome index in config.yaml
+  # (Bisulfite_Genome indices are tied to a Bismark/bowtie2 major version). Pinned
+  # to the newest bioconda release (v3.x, the Rust-rewritten Bismark suite) rather
+  # than a fixed bowtie2 version, since bismark's own dependency constraint
+  # (bowtie2>=2.5.5) should drive that resolution.
+  - bismark=3.1.0
+  - samtools=1.21

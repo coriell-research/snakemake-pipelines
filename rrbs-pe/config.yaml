@@ -1,0 +1,10 @@
+work_dir: "../data"
+
+trim_galore:
+  extra_params: ""
+
+# /home/gennaro/data/references/GRCm38/GENCODE/M25/bismark_idx (mm10 with ERCC + GFP)
+# /home/gennaro/data/references/GRCm39/GENCODE/M38/bismark_idx (mm39 with ERCC + GFP)
+bismark:
+  genome_dir: "/home/gennaro/data/references/GRCh38/GENCODE/v48/bismark_idx" # (hg38 with ERCC + GFP)
+  extra_params: ""
