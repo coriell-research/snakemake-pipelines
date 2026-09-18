@@ -130,8 +130,6 @@ REPO_RESOURCE_URLS = {
 
 
 # Rules ----------------------------------------------------------------------
-# rule all must stay the first rule in the file - it's Snakemake's implicit
-# default target when none is given on the command line.
 
 
 rule all:
@@ -150,6 +148,8 @@ rule download_gatk_resource:
         url = lambda w: GATK_RESOURCE_URLS[w.resource]
     log:
         f"{DOWNLOAD_DIR}/{{resource}}.log"
+    conda:
+        "envs/curl.yaml"
     shell:
         "curl -fsSL --retry 3 --retry-delay 5 -o {output} {params.url} 2> {log}"
 
@@ -170,6 +170,8 @@ rule download_repo_resource:
         url = lambda w: REPO_RESOURCE_URLS[w.resource]
     log:
         f"{DOWNLOAD_DIR}/{{resource}}.log"
+    conda:
+        "envs/curl.yaml"
     shell:
         "curl -fsSL --retry 3 --retry-delay 5 -o {output} {params.url} 2> {log}"
 
@@ -193,8 +195,7 @@ rule unzip_baits:
         "gunzip -c {input} > {output}"
 
 
-# Convenience target to pre-fetch everything (GATK + repo resources + VEP
-# cache) in one go.
+# Convenience target to pre-fetch everything (GATK + repo resources + VEP cache) in one go.
 rule download_resources:
     input:
         expand(f"{DOWNLOAD_DIR}/{{resource}}", resource=list(GATK_RESOURCE_URLS.keys()) + list(REPO_RESOURCE_URLS.keys())),
@@ -215,6 +216,8 @@ rule fastp:
         f"{FASTP_OUT}/{{sample}}/{{lane}}.log"
     params:
         extra = config["fastp"]["extra_params"]
+    conda:
+        "envs/fastp.yaml"
     shell:
         "fastp -i {input.r1} -I {input.r2} -o {output.r1_out} -O {output.r2_out} "
         "{params.extra} --html {output.html} --json {output.json} &> {log}"
@@ -223,7 +226,6 @@ rule fastp:
 # bwa mem (https://snakemake-wrappers.readthedocs.io/en/stable/wrappers/bio/bwa/mem.html)
 # Uses the classic bwa index (.amb/.ann/.bwt/.pac/.sa) downloaded alongside
 # ref.fasta from the GATK bucket - no index is built by this pipeline.
-
 rule bwa_mem:
     input:
         reads = [
@@ -237,8 +239,8 @@ rule bwa_mem:
         8
     params:
         # Read groups are set directly here from patient/sample/lane, so the
-        # separate "if needed" Picard AddOrReplaceReadGroups step is not
-        # needed. PL is not part of samples.csv, so ILLUMINA is assumed.
+        # separate Picard AddOrReplaceReadGroups step is not needed. 
+        # PL ILLUMINA is assumed.
         extra = lambda w: f"-R '@RG\\tID:{w.lane}\\tSM:{w.sample}\\tPL:ILLUMINA\\tLB:{w.sample}\\tPU:{w.lane}'",
         sorting = "samtools",
         sort_order = "coordinate",
@@ -250,9 +252,7 @@ rule bwa_mem:
 
 
 # Picard MergeSamFiles (https://snakemake-wrappers.readthedocs.io/en/stable/wrappers/bio/picard/mergesamfiles.html)
-# Only requested (via get_sample_bam_for_dedup) for samples with more than
-# one lane - i.e. "if needed".
-
+# Only requested (via get_sample_bam_for_dedup) for samples with more than one lane 
 rule merge_bam:
     input:
         get_lane_bams
@@ -271,7 +271,6 @@ rule merge_bam:
 
 
 # Picard MarkDuplicates (https://snakemake-wrappers.readthedocs.io/en/stable/wrappers/bio/picard/markduplicates.html)
-
 rule mark_duplicates:
     input:
         bams = get_sample_bam_for_dedup
@@ -295,6 +294,8 @@ rule index_markdup_bam:
         f"{MARKDUP_OUT}/{{sample}}.bam"
     output:
         f"{MARKDUP_OUT}/{{sample}}.bam.bai"
+    conda:
+        "envs/samtools.yaml"
     shell:
         "samtools index {input}"
 
@@ -302,7 +303,6 @@ rule index_markdup_bam:
 # Mutect2 calling/filtering follows the GATK best-practices meta-wrapper
 # (https://snakemake-wrappers.readthedocs.io/en/stable/meta-wrappers/bio/gatk_mutect2_calling.html),
 # extended to cover both tumor-normal paired and tumor-only patients.
-
 def mutect_bams(wildcards):
     p = PATIENTS[wildcards.patient]
     bams = [f"{MARKDUP_OUT}/{p['tumor']}.bam"]
@@ -452,6 +452,8 @@ rule mutect_pass_norm:
         buff = 10000,
         multi_allele = "-",
         check_ref = "s"
+    conda:
+        "envs/bcftools.yaml"
     shell:
         """
         bcftools view --types 'snps' -f 'PASS' {input.vcf} | \
@@ -463,7 +465,6 @@ rule mutect_pass_norm:
 
 # MuSE2 - paired only (no tumor-only mode). Modeled on
 # https://github.com/wwylab/MuSE/blob/master/MuSE.Snakemake/rules/muse2.smk
-
 rule muse_call:
     input:
         tumor = lambda w: f"{MARKDUP_OUT}/{PAIRED_PATIENTS[w.patient]['tumor']}.bam",
@@ -477,7 +478,7 @@ rule muse_call:
     threads:
         8
     conda:
-        "muse"
+        "envs/muse.yaml"
     params:
         out_prefix = f"{MUSE_PAIRED_OUT}/{{patient}}"
     log:
@@ -498,7 +499,7 @@ rule muse_sump:
     threads:
         8
     conda:
-        "muse"
+        "envs/muse.yaml"
     params:
         prefix = f"{MUSE_PAIRED_OUT}/{{patient}}"
     log:
@@ -524,6 +525,8 @@ rule muse_pass_norm:
         buff = 10000,
         multi_allele = "-",
         check_ref = "s"
+    conda:
+        "envs/bcftools.yaml"
     shell:
         """
         bcftools view --types 'snps' -f 'PASS' {input.vcf} | \
@@ -570,6 +573,8 @@ rule strelka_pass_norm:
         multi_allele = "-",
         check_ref = "s",
         raw_vcf = f"{STRELKA_PAIRED_OUT}/{{patient}}/results/variants/somatic.snvs.vcf.gz"
+    conda:
+        "envs/bcftools.yaml"
     shell:
         """
         bcftools view --types 'snps' -f 'PASS' {params.raw_vcf} | \
@@ -677,6 +682,8 @@ rule deepsomatic_pass_norm:
         buff = 10000,
         multi_allele = "-",
         check_ref = "s"
+    conda:
+        "envs/bcftools.yaml"
     shell:
         """
         bcftools view --types 'snps' -f 'PASS' {input.vcf} | \
@@ -712,6 +719,8 @@ rule consensus_calls_paired:
     params:
         prefix_dir = f"{CONSENSUS_OUT}/{{patient}}_isec",
         min_callers = config["consensus"]["min_callers_paired"],
+    conda:
+        "envs/bcftools.yaml"
     shell:
         """
         bcftools isec -c all -n+{params.min_callers} {input.mutect_vcf} {input.muse_vcf} {input.strelka_vcf} {input.deepsomatic_vcf} -p {params.prefix_dir}
@@ -735,6 +744,8 @@ rule consensus_calls_tumor_only:
     params:
         prefix_dir = f"{CONSENSUS_OUT}/{{patient}}_isec",
         min_callers = config["consensus"]["min_callers_tumor_only"],
+    conda:
+        "envs/bcftools.yaml"
     shell:
         """
         bcftools isec -c all -n+{params.min_callers} {input.mutect_vcf} {input.deepsomatic_vcf} -p {params.prefix_dir}
@@ -806,7 +817,7 @@ rule cnvkit_access:
     output:
         f"{RESOURCES_OUT}/access.bed"
     conda:
-        "cnvkit"
+        "envs/cnvkit.yaml"
     log:
         f"{RESOURCES_OUT}/cnvkit_access.log"
     shell:
@@ -819,7 +830,7 @@ rule cnvkit_target:
     output:
         f"{RESOURCES_OUT}/target.bed"
     conda:
-        "cnvkit"
+        "envs/cnvkit.yaml"
     log:
         f"{RESOURCES_OUT}/cnvkit_target.log"
     shell:
@@ -833,7 +844,7 @@ rule cnvkit_antitarget:
     output:
         f"{RESOURCES_OUT}/antitarget.bed"
     conda:
-        "cnvkit"
+        "envs/cnvkit.yaml"
     log:
         f"{RESOURCES_OUT}/cnvkit_antitarget.log"
     shell:
