@@ -1,0 +1,45 @@
+$schema: "https://json-schema.org/draft/2020-12/schema"
+description: >-
+  One row of samples.csv - a single sequencing lane belonging to a sample.
+  See the "Input" section of README.md for the full column definitions.
+type: object
+properties:
+  patient:
+    type: string
+    description: >-
+      Patient/subject ID. Unique per patient; shared across all of that
+      patient's samples (normal and tumor).
+    minLength: 1
+  status:
+    type: string
+    description: Tumor/normal status of this sample.
+    enum:
+      - tumor
+      - normal
+  sample:
+    type: string
+    description: >-
+      Sample ID. Unique per biological sample; shared across all lanes
+      belonging to that sample (so they get merged).
+    minLength: 1
+  lane:
+    type: string
+    description: >-
+      Lane ID. Must be unique within a sample (not necessarily globally).
+    minLength: 1
+  read1:
+    type: string
+    description: Full path to the gzipped read 1 FASTQ file.
+    pattern: '.*\.(fastq|fq)\.gz$'
+  read2:
+    type: string
+    description: Full path to the gzipped read 2 FASTQ file.
+    pattern: '.*\.(fastq|fq)\.gz$'
+required:
+  - patient
+  - status
+  - sample
+  - lane
+  - read1
+  - read2
+additionalProperties: false

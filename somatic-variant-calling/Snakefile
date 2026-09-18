@@ -2,6 +2,7 @@ import os
 import re
 
 import pandas as pd
+from snakemake.utils import validate
 
 
 configfile: "config.yaml"
@@ -26,7 +27,13 @@ RESOURCES_OUT = f"{WORK_DIR}/resources"
 
 # Samples -----------------------------------------------------------------
 
-SAMPLES = pd.read_csv("samples.csv", sep=",", header=0, dtype={"lane": str})
+# patient/sample forced to string too (not just lane) so purely-numeric IDs
+# (e.g. "52647") don't get read as ints and fail the schema's string checks.
+SAMPLES = pd.read_csv(
+    "samples.csv", sep=",", header=0,
+    dtype={"patient": str, "sample": str, "lane": str},
+)
+validate(SAMPLES, schema="schemas/samples.schema.yaml")
 
 # lanes belonging to each (biological) sample - merged if there is more than one
 LANES_BY_SAMPLE = SAMPLES.groupby("sample")["lane"].agg(list).to_dict()
