@@ -7,7 +7,7 @@ from snakemake.utils import validate
 
 configfile: "config.yaml"
 
-WORK_DIR = "../results"
+WORK_DIR = "results"
 FASTP_OUT = f"{WORK_DIR}/fastp"
 BWA_OUT = f"{WORK_DIR}/bwa"
 MERGE_OUT = f"{WORK_DIR}/merge"
@@ -111,11 +111,13 @@ GATK_RESOURCE_URLS = {
     "Homo_sapiens_assembly38.fasta": f"{GATK_REF_BUCKET}/Homo_sapiens_assembly38.fasta",
     "Homo_sapiens_assembly38.fasta.fai": f"{GATK_REF_BUCKET}/Homo_sapiens_assembly38.fasta.fai",
     "Homo_sapiens_assembly38.dict": f"{GATK_REF_BUCKET}/Homo_sapiens_assembly38.dict",
-    "Homo_sapiens_assembly38.fasta.amb": f"{GATK_REF_BUCKET}/Homo_sapiens_assembly38.fasta.amb",
-    "Homo_sapiens_assembly38.fasta.ann": f"{GATK_REF_BUCKET}/Homo_sapiens_assembly38.fasta.ann",
-    "Homo_sapiens_assembly38.fasta.bwt": f"{GATK_REF_BUCKET}/Homo_sapiens_assembly38.fasta.bwt",
-    "Homo_sapiens_assembly38.fasta.pac": f"{GATK_REF_BUCKET}/Homo_sapiens_assembly38.fasta.pac",
-    "Homo_sapiens_assembly38.fasta.sa": f"{GATK_REF_BUCKET}/Homo_sapiens_assembly38.fasta.sa",
+    # ".64" index set - see the comment on rule bwa_mem for why this one and
+    # not the bucket's plain (non-.64) .amb/.ann/.bwt/.pac/.sa.
+    "Homo_sapiens_assembly38.fasta.64.amb": f"{GATK_REF_BUCKET}/Homo_sapiens_assembly38.fasta.64.amb",
+    "Homo_sapiens_assembly38.fasta.64.ann": f"{GATK_REF_BUCKET}/Homo_sapiens_assembly38.fasta.64.ann",
+    "Homo_sapiens_assembly38.fasta.64.bwt": f"{GATK_REF_BUCKET}/Homo_sapiens_assembly38.fasta.64.bwt",
+    "Homo_sapiens_assembly38.fasta.64.pac": f"{GATK_REF_BUCKET}/Homo_sapiens_assembly38.fasta.64.pac",
+    "Homo_sapiens_assembly38.fasta.64.sa": f"{GATK_REF_BUCKET}/Homo_sapiens_assembly38.fasta.64.sa",
     "Homo_sapiens_assembly38.dbsnp138.vcf.gz": f"{GATK_REF_BUCKET}/Homo_sapiens_assembly38.dbsnp138.vcf.gz",
     "Homo_sapiens_assembly38.dbsnp138.vcf.gz.tbi": f"{GATK_REF_BUCKET}/Homo_sapiens_assembly38.dbsnp138.vcf.gz.tbi",
     "1000g_pon.hg38.vcf.gz": f"{GATK_MUTECT_BUCKET}/1000g_pon.hg38.vcf.gz",
@@ -231,8 +233,16 @@ rule fastp:
 
 
 # bwa mem (https://snakemake-wrappers.readthedocs.io/en/stable/wrappers/bio/bwa/mem.html)
-# Uses the classic bwa index (.amb/.ann/.bwt/.pac/.sa) downloaded alongside
-# ref.fasta from the GATK bucket - no index is built by this pipeline.
+# Uses the classic bwa index downloaded alongside ref.fasta from the GATK
+# bucket - no index is built by this pipeline. That bucket actually publishes
+# two index sets for this fasta: a plain one (.amb/.ann/.bwt/.pac/.sa) and an
+# ALT-aware one (.64.amb/.64.ann/.64.bwt/.64.pac/.64.sa, +.64.alt). The plain
+# one is a stale/undersized artifact - its .bwt/.sa are a fraction of the
+# size a full-genome BWT/SA array needs - and current bwa aborts on it with
+# "SA-BWT inconsistency: seq_len is not the same" (confirmed not a bwa
+# version issue: 0.7.12 through 0.7.19 all fail on it identically, and its
+# MD5s match the bucket exactly, so it isn't a truncated download either).
+# config["ref"]["bwa_index_prefix"] therefore points at the ".64" set.
 rule bwa_mem:
     input:
         reads = [
@@ -246,7 +256,7 @@ rule bwa_mem:
         8
     params:
         # Read groups are set directly here from patient/sample/lane, so the
-        # separate Picard AddOrReplaceReadGroups step is not needed. 
+        # separate Picard AddOrReplaceReadGroups step is not needed.
         # PL ILLUMINA is assumed.
         extra = lambda w: f"-R '@RG\\tID:{w.lane}\\tSM:{w.sample}\\tPL:ILLUMINA\\tLB:{w.sample}\\tPU:{w.lane}'",
         sorting = "samtools",
@@ -813,9 +823,19 @@ rule vep_annotate:
         "v9.17.1/bio/vep/annotate"
 
 
-# CNVkit (https://snakemake-wrappers.readthedocs.io/en/stable/wrappers/bio/cnvkit/batch.html)
+# CNVkit (https://cnvkit.readthedocs.io/en/stable/quickstart.html#build-a-reference-from-normal-samples-and-infer-tumor-copy-ratios)
 # A single pooled reference is built from all available normals and reused
 # for every tumor sample (including tumor-only patients).
+# `cnvkit.py batch` already splits the raw baits into target bins and
+# generates antitarget bins internally when building a reference (its -t
+# accepts the raw, unsplit baits BED, and -a/-g are optional - it calls the
+# same `target`/`antitarget` logic itself if they're omitted), so those
+# don't need their own rules. Only the access BED is precomputed separately
+# here, since it's genome-wide and sample-independent (reused as-is across
+# every run), matching CNVkit's own quickstart. The snakemake-wrapper isn't
+# used for reference-building because it hard-requires already-split
+# target/antitarget file inputs; the per-tumor rule below still uses it
+# since it only needs the prebuilt reference.
 
 rule cnvkit_access:
     input:
@@ -831,41 +851,14 @@ rule cnvkit_access:
         "cnvkit.py access {input.fasta} -o {output} &> {log}"
 
 
-rule cnvkit_target:
-    input:
-        config["cnvkit"]["baits"]
-    output:
-        f"{RESOURCES_OUT}/target.bed"
-    conda:
-        "envs/cnvkit.yaml"
-    log:
-        f"{RESOURCES_OUT}/cnvkit_target.log"
-    shell:
-        "cnvkit.py target {input} --split -o {output} &> {log}"
-
-
-rule cnvkit_antitarget:
-    input:
-        target = f"{RESOURCES_OUT}/target.bed",
-        access = f"{RESOURCES_OUT}/access.bed",
-    output:
-        f"{RESOURCES_OUT}/antitarget.bed"
-    conda:
-        "envs/cnvkit.yaml"
-    log:
-        f"{RESOURCES_OUT}/cnvkit_antitarget.log"
-    shell:
-        "cnvkit.py antitarget {input.target} -g {input.access} -o {output} &> {log}"
-
-
 rule cnvkit_batch_build_reference:
     input:
         bam = expand(f"{MARKDUP_OUT}/{{sample}}.bam", sample=ALL_NORMAL_SAMPLES),
         bai = expand(f"{MARKDUP_OUT}/{{sample}}.bam.bai", sample=ALL_NORMAL_SAMPLES),
         fasta = config["ref"]["fasta"],
         fasta_fai = config["ref"]["fai"],
-        target = f"{RESOURCES_OUT}/target.bed",
-        antitarget = f"{RESOURCES_OUT}/antitarget.bed",
+        baits = config["cnvkit"]["baits"],
+        access = f"{RESOURCES_OUT}/access.bed",
     output:
         reference = f"{CNVKIT_OUT}/reference.cnn"
     threads:
@@ -874,11 +867,14 @@ rule cnvkit_batch_build_reference:
         mem_mb = 16384
     params:
         method = config["cnvkit"]["method"],
-        extra = "",
+    conda:
+        "envs/cnvkit.yaml"
     log:
         f"{CNVKIT_OUT}/reference.log"
-    wrapper:
-        "v9.17.1/bio/cnvkit/batch"
+    shell:
+        "cnvkit.py batch -n {input.bam} -f {input.fasta} -t {input.baits} "
+        "-g {input.access} -m {params.method} -p {threads} "
+        "--output-reference {output.reference} &> {log}"
 
 
 rule cnvkit_batch:
