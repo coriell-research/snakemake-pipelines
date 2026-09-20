@@ -10,7 +10,7 @@ ref:
   fasta: "resources/Homo_sapiens_assembly38.fasta"
   fai: "resources/Homo_sapiens_assembly38.fasta.fai"
   dict: "resources/Homo_sapiens_assembly38.dict"
-  bwa_index_prefix: "resources/Homo_sapiens_assembly38.fasta"
+  bwa_index_prefix: "resources/Homo_sapiens_assembly38.fasta.64"
 
 gatk:
   # Downloaded automatically (see Resource download section in the Snakefile).
@@ -35,6 +35,13 @@ strelka:
   # WES data - restricts calling to the padded exome model
   config_extra: "--exome"
   run_extra: ""
+
+mosdepth:
+  # Extra flags passed straight to mosdepth, e.g. "--fast-mode" or
+  # "--use-median". See rule mosdepth in the Snakefile - assay_type below
+  # picks between per-region (WES, restricted to cnvkit.baits) and
+  # genome-wide per-base (WGS) coverage.
+  extra: ""
 
 deepsomatic:
   # https://github.com/google/deepsomatic - run via singularity (no wrapper
@@ -68,11 +75,13 @@ vep:
   extra: "--everything"
 
 cnvkit:
-  # Agilent Sure Select v6 All Exons padded BED file. Stored gzipped in this
-  # repo; downloaded and unzipped automatically (see rule unzip_baits in the
-  # Snakefile) - only works once somatic-variant-calling/data/ is committed
-  # and pushed.
-  baits: "resources/agilent-sure-select-v6-all-exons_S07604514_Padded.bed"
+  # SEQC2/HCC1395 case-study exome-regions BED (see 01_get-wes-test-data.sh),
+  # relative to this Snakefile like samples.csv's read1/read2 paths - keep it
+  # off any $HOME-nested path: singularity auto-mounts the real $HOME into
+  # the DeepSomatic container, which shadows a nested -B bind added for a
+  # path underneath it (see DEEPSOMATIC_BIND_PATHS in the Snakefile), making
+  # the file invisible to DeepSomatic despite the bind looking correct.
+  baits: "../data/deepsomatic-wes-case-study/input/data/seqc2_hg38.exome_regions.bed"
   method: "hybrid"
 
 hotspots:

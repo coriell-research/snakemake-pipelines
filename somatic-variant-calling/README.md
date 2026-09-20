@@ -1,7 +1,6 @@
 ## Overview
 
-Somatic variant calling pipeline that can incorporate tumor-normal paired data and accomodate 
-whole-exome-sequencing data as well as whole-genome-sequencing data.
+Somatic variant calling pipeline for WGS/WES, tumor-normal pairs and tumor-only data.
 
 ### Input
 
@@ -29,4 +28,10 @@ The input "samples.csv" file has the following required columns:
 9. Variant annotation using [VEP](https://github.com/Ensembl/ensembl-vep) [snakemake wrapper](https://snakemake-wrappers.readthedocs.io/en/stable/wrappers/bio/vep/annotate.html)
 10. Copy number estimation using [CNVkit](https://cnvkit.readthedocs.io/en/stable/) [snakemake wrapper](https://snakemake-wrappers.readthedocs.io/en/stable/wrappers/bio/cnvkit/batch.html)
 11. Rapid (kind of) genotyping of known somatic variants from the tumor BAM files with [somaticfreq](https://github.com/PoisonAlien/somaticfreq)
+12. Coverage statistics with [mosdepth](https://github.com/brentp/mosdepth) using the [snakemake wrapper](https://snakemake-wrappers.readthedocs.io/en/stable/wrappers/bio/mosdepth.html)
+
+### Notes
+
+- All 4 variant callers can accept tumor-normal pair data. Only Mutect2 and DeepSomatic can be run with tumor-only samples
+- By default, consensus calls are determined for tumor-normal pairs if at least 3/4 callers made the call. For tumor-only, both callers need to form the consensus (2/2). These options can be changes in the config.
 

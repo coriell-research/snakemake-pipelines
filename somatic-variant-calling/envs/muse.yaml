@@ -1,6 +1,6 @@
 channels:
-  - bioconda
   - conda-forge
+  - bioconda
 dependencies:
-  - muse=1.0.rc
+  - muse=2.1.2
   - htslib=1.21
