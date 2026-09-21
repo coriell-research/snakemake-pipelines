@@ -25,6 +25,7 @@ ANNOTATED_OUT = f"{WORK_DIR}/vep"
 CNVKIT_OUT = f"{WORK_DIR}/cnvkit"
 SOMATICFREQ_OUT = f"{WORK_DIR}/somaticfreq"
 RESOURCES_OUT = f"{WORK_DIR}/resources"
+MULTIQC_OUT = f"{WORK_DIR}/multiqc"
 
 # Samples -----------------------------------------------------------------
 
@@ -66,6 +67,10 @@ TUMOR_ONLY_PATIENTS = {p: v for p, v in PATIENTS.items() if not v["normal"]}
 ALL_SAMPLES = sorted(SAMPLES["sample"].unique())
 ALL_NORMAL_SAMPLES = sorted({v["normal"] for v in PAIRED_PATIENTS.values()})
 ALL_TUMOR_SAMPLES = sorted({v["tumor"] for v in PATIENTS.values()})
+
+# one fastp report per (sample, lane) row - not a simple expand() cross
+# product, since lanes differ per sample
+FASTP_JSONS = [f"{FASTP_OUT}/{row.sample}/{row.lane}.fastp.json" for row in SAMPLES.itertuples()]
 
 
 def _alternation_or_no_match(values):
@@ -144,6 +149,7 @@ rule all:
         expand(f"{CNVKIT_OUT}/{{patient}}.call.cns", patient=PATIENTS.keys()),
         expand(f"{SOMATICFREQ_OUT}/{{sample}}.tsv", sample=ALL_TUMOR_SAMPLES),
         expand(f"{MOSDEPTH_OUT}/{{sample}}.mosdepth.summary.txt", sample=ALL_SAMPLES),
+        f"{MULTIQC_OUT}/multiqc_report.html",
 
 
 rule download_gatk_resource:
@@ -879,6 +885,9 @@ rule cnvkit_access:
         "cnvkit.py access {input.fasta} -o {output} &> {log}"
 
 
+CNVKIT_BAITS_STEM = os.path.splitext(os.path.basename(config["cnvkit"]["baits"]))[0]
+
+
 rule cnvkit_batch_build_reference:
     input:
         bam = expand(f"{MARKDUP_OUT}/{{sample}}.bam", sample=ALL_NORMAL_SAMPLES),
@@ -888,13 +897,18 @@ rule cnvkit_batch_build_reference:
         baits = config["cnvkit"]["baits"],
         access = f"{RESOURCES_OUT}/access.bed",
     output:
-        reference = f"{CNVKIT_OUT}/reference.cnn"
+        reference = f"{CNVKIT_OUT}/reference.cnn",
+        target_bed = f"{CNVKIT_OUT}/{CNVKIT_BAITS_STEM}.target.bed",
+        antitarget_bed = f"{CNVKIT_OUT}/{CNVKIT_BAITS_STEM}.antitarget.bed",
+        target_coverage = expand(f"{CNVKIT_OUT}/{{sample}}.targetcoverage.cnn", sample=ALL_NORMAL_SAMPLES),
+        antitarget_coverage = expand(f"{CNVKIT_OUT}/{{sample}}.antitargetcoverage.cnn", sample=ALL_NORMAL_SAMPLES),
     threads:
         8
     resources:
         mem_mb = 16384
     params:
         method = config["cnvkit"]["method"],
+        outdir = CNVKIT_OUT,
     conda:
         "envs/cnvkit.yaml"
     log:
@@ -902,7 +916,7 @@ rule cnvkit_batch_build_reference:
     shell:
         "cnvkit.py batch -n {input.bam} -f {input.fasta} -t {input.baits} "
         "-g {input.access} -m {params.method} -p {threads} "
-        "--output-reference {output.reference} &> {log}"
+        "-d {params.outdir} --output-reference {output.reference} &> {log}"
 
 
 rule cnvkit_batch:
@@ -959,3 +973,24 @@ rule somaticfreq:
         fi
         somaticfreq {params.extra} -f {input.ref} -o {params.out_prefix} {input.loci} {input.bam} &> {log}
         """
+
+
+# MultiQC (https://snakemake-wrappers.readthedocs.io/en/stable/wrappers/bio/multiqc.html)
+# Summarizes QC-relevant reports across the pipeline: per-lane fastp reports,
+# per-sample MarkDuplicates and mosdepth metrics, and per-patient VEP stats.
+rule multiqc:
+    input:
+        fastp = FASTP_JSONS,
+        markdup = expand(f"{MARKDUP_OUT}/{{sample}}.metrics.txt", sample=ALL_SAMPLES),
+        mosdepth = expand(f"{MOSDEPTH_OUT}/{{sample}}.mosdepth.summary.txt", sample=ALL_SAMPLES)
+            + expand(f"{MOSDEPTH_OUT}/{{sample}}.mosdepth.global.dist.txt", sample=ALL_SAMPLES),
+        vep = expand(f"{ANNOTATED_OUT}/{{patient}}.stats.html", patient=PATIENTS.keys()),
+    output:
+        f"{MULTIQC_OUT}/multiqc_report.html",
+        directory(f"{MULTIQC_OUT}/multiqc_data"),
+    params:
+        extra = "",
+    log:
+        f"{MULTIQC_OUT}/multiqc.log"
+    wrapper:
+        "v9.17.1/bio/multiqc"
