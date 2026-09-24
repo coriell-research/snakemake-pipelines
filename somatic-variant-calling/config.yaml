@@ -13,14 +13,11 @@ ref:
   bwa_index_prefix: "resources/Homo_sapiens_assembly38.fasta.64"
 
 gatk:
-  # Downloaded automatically (see Resource download section in the Snakefile).
   pon: "resources/1000g_pon.hg38.vcf.gz"
   glr: "resources/af-only-gnomad.hg38.vcf.gz"
   snps: "resources/small_exac_common_3.hg38.vcf.gz"
 
 mutect:
-  strategy: "FALSE_DISCOVERY_RATE"
-  fdr: 0.01
   alt_reads: 3
   read_pos: 10
   base_qual: 30
@@ -28,19 +25,13 @@ mutect:
   progress_seconds: 120
 
 muse:
-  # Downloaded automatically, already bgzipped+tabix-indexed.
   dbsnp: "resources/Homo_sapiens_assembly38.dbsnp138.vcf.gz"
 
 strelka:
-  # WES data - restricts calling to the padded exome model
   config_extra: "--exome"
   run_extra: ""
 
 mosdepth:
-  # Extra flags passed straight to mosdepth, e.g. "--fast-mode" or
-  # "--use-median". See rule mosdepth in the Snakefile - assay_type below
-  # picks between per-region (WES, restricted to cnvkit.baits) and
-  # genome-wide per-base (WGS) coverage.
   extra: ""
 
 deepsomatic:
@@ -54,11 +45,8 @@ deepsomatic:
 
 consensus:
   # Minimum number of callers that must PASS a site for it to survive into
-  # the consensus VCF (bcftools isec -n+<N>, i.e. "at least N"). Most runs of
-  # this pipeline are WES tumor-normal pairs, where 4 callers run (Mutect2,
-  # MuSE2, Strelka2, DeepSomatic) - defaults to requiring 3/4 rather than
-  # unanimous 4/4, which was too strict in practice.
-  min_callers_paired: 3
+  # the consensus VCF (bcftools isec -n+<N>, i.e. "at least N").
+  min_callers_paired: 2
   # Tumor-only patients only run 2 callers (Mutect2, DeepSomatic); defaults
   # to requiring both (2/2).
   min_callers_tumor_only: 2
@@ -69,32 +57,17 @@ vep:
   species: "homo_sapiens"
   build: "GRCh38"
   release: 115
-  # No plugins configured by default; add plugin names here (and matching
-  # aux-file inputs in the Snakefile) as needed.
   plugins: []
   extra: "--everything"
 
 cnvkit:
-  # SEQC2/HCC1395 case-study exome-regions BED (see 01_get-wes-test-data.sh),
-  # relative to this Snakefile like samples.csv's read1/read2 paths - keep it
-  # off any $HOME-nested path: singularity auto-mounts the real $HOME into
-  # the DeepSomatic container, which shadows a nested -B bind added for a
-  # path underneath it (see DEEPSOMATIC_BIND_PATHS in the Snakefile), making
-  # the file invisible to DeepSomatic despite the bind looking correct.
-  baits: "../data/deepsomatic-wes-case-study/input/data/seqc2_hg38.exome_regions.bed"
+  baits: "resources/agilent-sure-select-v6-all-exons_S07604514_Padded.bed.gz"
   method: "hybrid"
 
 hotspots:
-  # cancerhotspots.org (v2, GRCh38) recurrent mutation positions. Downloaded
-  # automatically like cnvkit.baits above. Used by rule somaticfreq below.
   path: "resources/cancerhotspots_v2_GRCh38.tsv"
 
 somaticfreq:
-  # https://github.com/PoisonAlien/somaticfreq - not on conda, expected to
-  # already be installed and on PATH; rule somaticfreq no-ops with a warning
-  # rather than failing the pipeline if it isn't found.
-  # Extra flags, e.g. "-q 20 -d 50" to override the tool's own defaults
-  # (mapping quality, min depth, VAF threshold, etc - see its README).
   extra: ""
 
 java:

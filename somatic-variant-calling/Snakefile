@@ -88,24 +88,6 @@ wildcard_constraints:
 
 
 # Resource download ------------------------------------------------------
-# Downloads every resource this pipeline's config.yaml points at into
-# ./resources (relative to this Snakefile, distinct from the pipeline's
-# WORK_DIR outputs), so no local absolute paths need to be manually
-# specified in config.yaml:
-#  - GATK hg38 resource-bundle files, from Broad's public GCS buckets
-#    (ref.fasta/fai/dict, ref.bwa_index_prefix's .amb/.ann/.bwt/.pac/.sa,
-#    gatk.pon/glr/snps, muse.dbsnp)
-#  - Project-specific resources (WES baits, cancer hotspots) committed
-#    straight into this repo, fetched via raw.githubusercontent.com
-#    (cnvkit.baits, hotspots.path)
-#  - The VEP cache, via the bio/vep/cache wrapper (see rule vep_cache below,
-#    next to its consumer rule vep_annotate)
-# config.yaml points those keys directly at these paths, so any rule needing
-# them pulls the corresponding download in automatically - a plain
-# `snakemake` run downloads whatever is missing. This pipeline does not
-# build its own bwa index (see rule bwa_mem below); it downloads the
-# prebuilt one already sitting next to the fasta in the GATK bucket.
-
 DOWNLOAD_DIR = "resources"
 VEP_CACHE_OUT = f"{DOWNLOAD_DIR}/vep/cache"
 GATK_REF_BUCKET = "https://storage.googleapis.com/gcp-public-data--broad-references/hg38/v0"
@@ -230,9 +212,6 @@ rule fastp:
         "{params.extra} --html {output.html} --json {output.json} &> {log}"
 
 
-# bwa mem (https://snakemake-wrappers.readthedocs.io/en/stable/wrappers/bio/bwa/mem.html)
-# Uses the bwa index downloaded alongside ref.fasta from the GATK bucket - no index is built 
-# by this pipeline. 
 rule bwa_mem:
     input:
         reads = [
@@ -258,7 +237,6 @@ rule bwa_mem:
         "v9.17.1/bio/bwa/mem"
 
 
-# Picard MergeSamFiles (https://snakemake-wrappers.readthedocs.io/en/stable/wrappers/bio/picard/mergesamfiles.html)
 # Only requested (via get_sample_bam_for_dedup) for samples with more than one lane 
 rule merge_bam:
     input:
@@ -277,7 +255,6 @@ rule merge_bam:
         "v9.17.1/bio/picard/mergesamfiles"
 
 
-# Picard MarkDuplicates (https://snakemake-wrappers.readthedocs.io/en/stable/wrappers/bio/picard/markduplicates.html)
 rule mark_duplicates:
     input:
         bams = get_sample_bam_for_dedup
@@ -305,7 +282,6 @@ rule index_markdup_bam:
         "samtools index {input}"
 
 
-# mosdepth (https://snakemake-wrappers.readthedocs.io/en/stable/wrappers/bio/mosdepth.html)
 if config["deepsomatic"]["assay_type"] == "WES":
     rule mosdepth:
         input:
@@ -344,9 +320,6 @@ else:
             "v9.17.1/bio/mosdepth"
 
 
-# Mutect2 calling/filtering follows the GATK best-practices meta-wrapper
-# (https://snakemake-wrappers.readthedocs.io/en/stable/meta-wrappers/bio/gatk_mutect2_calling.html),
-# extended to cover both tumor-normal paired and tumor-only patients.
 def mutect_bams(wildcards):
     p = PATIENTS[wildcards.patient]
     bams = [f"{MARKDUP_OUT}/{p['tumor']}.bam"]
@@ -468,14 +441,6 @@ rule filter_mutect_calls:
     resources:
         mem_mb = 8192
     params:
-        extra = (
-            f"--threshold-strategy {config['mutect']['strategy']} "
-            f"--false-discovery-rate {config['mutect']['fdr']} "
-            f"--unique-alt-read-count {config['mutect']['alt_reads']} "
-            f"--min-median-read-position {config['mutect']['read_pos']} "
-            f"--min-median-base-quality {config['mutect']['base_qual']} "
-            f"--min-allele-fraction {config['mutect']['min_allele']}"
-        ),
         java_opts = "",
     log:
         f"{MUTECT_OUT}/{{patient}}.filter.log"
@@ -499,15 +464,13 @@ rule mutect_pass_norm:
         "envs/bcftools.yaml"
     shell:
         """
-        bcftools view --types 'snps' -f 'PASS' {input.vcf} | \
+        bcftools view -f 'PASS' {input.vcf} | \
         bcftools norm -c {params.check_ref} -m {params.multi_allele} -w {params.buff} -f {input.ref} | \
         bcftools view -Oz -o {output.vcf} && \
         bcftools index -t {output.vcf}
         """
 
 
-# MuSE2 - paired only (no tumor-only mode). Modeled on
-# https://github.com/wwylab/MuSE/blob/master/MuSE.Snakemake/rules/muse2.smk
 rule muse:
     input:
         tumor = lambda w: f"{MARKDUP_OUT}/{PAIRED_PATIENTS[w.patient]['tumor']}.bam",
@@ -533,12 +496,6 @@ rule muse:
     shell:
         """
         MuSE call -O {params.call_prefix} -f {input.ref} -n {threads} {input.tumor} {input.normal} 2> {log}
-        # download_gatk_resource downloads a resource's .vcf.gz and .tbi as
-        # two independent, unordered jobs, so the .tbi can end up with an
-        # older mtime than its .vcf.gz purely from download timing - MuSE
-        # sump (unlike other tools this pipeline uses) treats that as a
-        # stale index and refuses to run. touch it immediately beforehand so
-        # its mtime is always newer, regardless of download order.
         touch {input.dbsnp_tbi}
         MuSE sump -I {params.call_prefix}.MuSE.txt -E -n {threads} -O {params.work_prefix}.vcf -D {input.dbsnp} 2>> {log}
         bgzip {params.work_prefix}.vcf
@@ -565,15 +522,13 @@ rule muse_pass_norm:
         "envs/bcftools.yaml"
     shell:
         """
-        bcftools view --types 'snps' -f 'PASS' {input.vcf} | \
+        bcftools view -f 'PASS' {input.vcf} | \
         bcftools norm -c {params.check_ref} -m {params.multi_allele} -w {params.buff} -f {input.ref} | \
         bcftools view -Oz -o {output.vcf} && \
         bcftools index -t {output.vcf}
         """
 
 
-# Strelka2 - paired only, its somatic workflow requires a matched normal
-# (https://snakemake-wrappers.readthedocs.io/en/stable/wrappers/bio/strelka/somatic.html)
 rule strelka_somatic:
     input:
         tumor = lambda w: f"{MARKDUP_OUT}/{PAIRED_PATIENTS[w.patient]['tumor']}.bam",
@@ -612,22 +567,15 @@ rule strelka_pass_norm:
         "envs/bcftools.yaml"
     shell:
         """
-        bcftools view --types 'snps' -f 'PASS' {params.raw_vcf} | \
+        bcftools view -f 'PASS' {params.raw_vcf} | \
         bcftools norm -c {params.check_ref} -m {params.multi_allele} -w {params.buff} -f {input.ref} | \
         bcftools view -Oz -o {output.vcf} && \
         bcftools index -t {output.vcf}
         """
 
 
-# DeepSomatic - runs for both paired and tumor-only patients (unlike
-# MuSE2/Strelka2), via singularity since it's only published as a container
-# (https://github.com/google/deepsomatic). Model type and --regions follow
-# whichever of the 4 linked case studies matches this patient:
-#   paired + WES   -> https://github.com/google/deepsomatic/blob/r1.10/docs/deepsomatic-case-study-wes.md            (model_type=WES)
-#   paired + WGS   -> https://github.com/google/deepsomatic/blob/r1.10/docs/deepsomatic-case-study-wgs.md            (model_type=WGS)
-#   tumor-only WES -> https://github.com/google/deepsomatic/blob/r1.10/docs/deepsomatic-case-study-ffpe-wes-tumor-only.md (model_type=FFPE_WES_TUMOR_ONLY)
-#   tumor-only WGS -> https://github.com/google/deepsomatic/blob/r1.10/docs/deepsomatic-case-study-wgs-tumor-only.md      (model_type=WGS_TUMOR_ONLY)
-# config["deepsomatic"]["assay_type"] ("WES" or "WGS") picks between them.
+# DeepSomatic - runs for both paired and tumor-only patients via singularity since 
+# it's only published as a container (https://github.com/google/deepsomatic).
 def deepsomatic_input_bams(wildcards):
     p = PATIENTS[wildcards.patient]
     files = {
@@ -663,17 +611,7 @@ def deepsomatic_extra(wildcards, input, threads):
         extra += f" --regions={config['cnvkit']['baits']}"
     return extra
 
-# Directories singularity needs to see: the pipeline's working/output tree,
-# this Snakefile's own directory (resources/ downloads live there), and
-# wherever the WES baits BED lives (may be outside both of the above).
-# rule deepsomatic_call also passes --no-home: singularity otherwise
-# auto-mounts the real host $HOME into the container, which - on any machine
-# where this repo (or a path a config value points at, e.g. cnvkit.baits)
-# happens to live under $HOME - shadows these explicit binds and makes the
-# shadowed files invisible to DeepSomatic despite the bind looking correct.
-# --no-home keeps container visibility limited to exactly these paths,
-# regardless of where the checkout or its configured resources happen to
-# sit on a given machine.
+
 DEEPSOMATIC_SCRIPTS_DIR = os.path.abspath(".")
 
 DEEPSOMATIC_BIND_PATHS = sorted({
@@ -702,15 +640,6 @@ rule deepsomatic_call:
     log:
         f"{DEEPSOMATIC_OUT}/{{patient}}.log"
     shell:
-        # --pwd is passed explicitly (rather than relying on singularity's
-        # default of mirroring the launching shell's $PWD) because --no-home
-        # means that default is no longer guaranteed to land inside a bound
-        # directory: $PWD can hold whatever (possibly symlinked) path string
-        # the shell that launched snakemake happened to have, and without
-        # the real $HOME auto-mounted there's nothing left to resolve it
-        # through. run_deepsomatic's own relative-path arguments below
-        # (--reads_tumor, --ref, --regions, ...) are all resolved against
-        # this --pwd, so it must be one of DEEPSOMATIC_BIND_PATHS.
         """
         mkdir -p {params.intermediate_dir} {params.logging_dir}
         singularity run --no-home --pwd {params.pwd} {params.bind} \
@@ -740,7 +669,7 @@ rule deepsomatic_pass_norm:
         "envs/bcftools.yaml"
     shell:
         """
-        bcftools view --types 'snps' -f 'PASS' {input.vcf} | \
+        bcftools view -f 'PASS' {input.vcf} | \
         bcftools norm -c {params.check_ref} -m {params.multi_allele} -w {params.buff} -f {input.ref} | \
         bcftools view -Oz -o {output.vcf} && \
         bcftools index -t {output.vcf}
@@ -748,16 +677,8 @@ rule deepsomatic_pass_norm:
 
 
 # Consensus -------------------------------------------------------------------
-# Paired patients: sites called PASS by at least config["consensus"]["min_callers_paired"]
-# of the 4 callers (Mutect2, MuSE2, Strelka2, DeepSomatic) - defaults to 3/4,
-# since most runs of this pipeline are WES tumor-normal pairs and requiring
-# unanimous 4/4 agreement was too strict in practice.
-# Tumor-only patients: MuSE2/Strelka2 don't run (see their rules above), so
-# consensus is between Mutect2 and DeepSomatic only, out of
-# config["consensus"]["min_callers_tumor_only"] (defaults to 2/2, i.e. both).
-# bcftools isec -n+N means "at least N", so both settings can range from 1
-# (union - any caller) up to the number of callers run for that patient
-# (intersection - all must agree).
+
+
 rule consensus_calls_paired:
     input:
         mutect_vcf = f"{MUTECT_OUT}/{{patient}}.pass.vcf.gz",
@@ -810,11 +731,6 @@ rule consensus_calls_tumor_only:
         """
 
 
-# VEP annotation (https://snakemake-wrappers.readthedocs.io/en/stable/wrappers/bio/vep/annotate.html)
-# Cache is downloaded via the bio/vep/cache wrapper
-# (https://snakemake-wrappers.readthedocs.io/en/stable/wrappers/bio/vep/cache.html)
-# into DOWNLOAD_DIR (VEP_CACHE_OUT, defined up in the Resource download
-# section), so no local cache path needs to be specified in config.yaml.
 rule vep_cache:
     output:
         directory(VEP_CACHE_OUT)
@@ -858,19 +774,6 @@ rule vep_annotate:
         "v9.17.1/bio/vep/annotate"
 
 
-# CNVkit (https://cnvkit.readthedocs.io/en/stable/quickstart.html#build-a-reference-from-normal-samples-and-infer-tumor-copy-ratios)
-# A single pooled reference is built from all available normals and reused
-# for every tumor sample (including tumor-only patients).
-# `cnvkit.py batch` already splits the raw baits into target bins and
-# generates antitarget bins internally when building a reference (its -t
-# accepts the raw, unsplit baits BED, and -a/-g are optional - it calls the
-# same `target`/`antitarget` logic itself if they're omitted), so those
-# don't need their own rules. Only the access BED is precomputed separately
-# here, since it's genome-wide and sample-independent (reused as-is across
-# every run), matching CNVkit's own quickstart. The snakemake-wrapper isn't
-# used for reference-building because it hard-requires already-split
-# target/antitarget file inputs; the per-tumor rule below still uses it
-# since it only needs the prebuilt reference.
 rule cnvkit_access:
     input:
         fasta = config["ref"]["fasta"],
@@ -886,7 +789,6 @@ rule cnvkit_access:
 
 
 CNVKIT_BAITS_STEM = os.path.splitext(os.path.basename(config["cnvkit"]["baits"]))[0]
-
 
 rule cnvkit_batch_build_reference:
     input:
@@ -944,8 +846,6 @@ rule cnvkit_batch:
         "v9.17.1/bio/cnvkit/batch"
 
 
-# somaticfreq (https://github.com/PoisonAlien/somaticfreq#usage) - targeted
-# VAF/read-count check at known cancer hotspots, run on each tumor BAM.
 # Not on conda; expected to already be installed and on PATH.
 rule somaticfreq:
     input:
@@ -975,9 +875,6 @@ rule somaticfreq:
         """
 
 
-# MultiQC (https://snakemake-wrappers.readthedocs.io/en/stable/wrappers/bio/multiqc.html)
-# Summarizes QC-relevant reports across the pipeline: per-lane fastp reports,
-# per-sample MarkDuplicates and mosdepth metrics, and per-patient VEP stats.
 rule multiqc:
     input:
         fastp = FASTP_JSONS,
