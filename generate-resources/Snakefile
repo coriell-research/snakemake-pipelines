@@ -78,6 +78,8 @@ SPECIES_DIR_T = f"{RESOURCES_DIR}/{{assembly}}/GENCODE/{{release}}"
 GENOME_STEM_T = "{assembly}.primary_assembly.genome"
 GENOME_FA_T = f"{SPECIES_DIR_T}/{GENOME_STEM_T}.fa"
 WITH_SPIKES_FA_T = f"{SPECIES_DIR_T}/{GENOME_STEM_T}.with_spikes.fa"
+
+# Primary-only index templates (no spike-ins)
 STAR_IDX_T = f"{SPECIES_DIR_T}/STAR_idx"
 BOWTIE2_PREFIX_T = f"{SPECIES_DIR_T}/bt2_idx/{GENOME_STEM_T}"
 BWA_MEM2_PREFIX_T = f"{SPECIES_DIR_T}/bwa-mem2_idx/{GENOME_STEM_T}"
@@ -86,8 +88,20 @@ MINIMAP2_MMI_T = f"{SPECIES_DIR_T}/mm2_idx/{GENOME_STEM_T}.mmi"
 BISMARK_IDX_T = f"{SPECIES_DIR_T}/bismark_idx"
 BWAMETH_PREFIX_T = f"{SPECIES_DIR_T}/bwa-meth_idx/{GENOME_STEM_T}.fa.gz.bwameth.c2t"
 MINIBWA_PREFIX_T = f"{SPECIES_DIR_T}/minibwa_idx/{GENOME_STEM_T}.fa"
-EXCLUDERANGES_BED_T = f"{SPECIES_DIR_T}/excluderanges.bed"
 CHROM_SIZES_T = f"{SPECIES_DIR_T}/{GENOME_STEM_T}.fa.chrom_sizes"
+
+# Spike-in index templates (ERCC + GFP for most, lambda for bisulfite aligners)
+STAR_ERCC_GFP_IDX_T = f"{SPECIES_DIR_T}/STAR_ercc_gfp_idx"
+BOWTIE2_ERCC_GFP_PREFIX_T = f"{SPECIES_DIR_T}/bt2_ercc_gfp_idx/{GENOME_STEM_T}"
+BWA_MEM2_ERCC_GFP_PREFIX_T = f"{SPECIES_DIR_T}/bwa-mem2_ercc_gfp_idx/{GENOME_STEM_T}"
+SALMON_ERCC_GFP_IDX_T = f"{SPECIES_DIR_T}/salmon_ercc_gfp_idx"
+MINIMAP2_ERCC_GFP_MMI_T = f"{SPECIES_DIR_T}/mm2_ercc_gfp_idx/{GENOME_STEM_T}.mmi"
+BISMARK_LAMBDA_IDX_T = f"{SPECIES_DIR_T}/bismark_lambda_idx"
+BWAMETH_LAMBDA_PREFIX_T = f"{SPECIES_DIR_T}/bwa-meth_lambda_idx/{GENOME_STEM_T}.fa.gz.bwameth.c2t"
+MINIBWA_ERCC_GFP_PREFIX_T = f"{SPECIES_DIR_T}/minibwa_ercc_gfp_idx/{GENOME_STEM_T}.fa"
+CHROM_SIZES_ERCC_GFP_T = f"{SPECIES_DIR_T}/{GENOME_STEM_T}.fa.ercc_gfp.chrom_sizes"
+
+EXCLUDERANGES_BED_T = f"{SPECIES_DIR_T}/excluderanges.bed"
 
 # ---------------------------------------------------------------------------
 # Spike-in / decoy sequences, downloaded from this repo's own
@@ -112,6 +126,7 @@ def expand_species(template):
 
 rule all:
     input:
+        # Primary-only indices (no spike-ins)
         expand_species(STAR_IDX_T),
         [expand_species(f"{BOWTIE2_PREFIX_T}{ext}") for ext in (".1.bt2", ".2.bt2", ".3.bt2", ".4.bt2", ".rev.1.bt2", ".rev.2.bt2")],
         [expand_species(f"{BWA_MEM2_PREFIX_T}{ext}") for ext in (".0123", ".amb", ".ann", ".bwt.2bit.64", ".pac")],
@@ -120,8 +135,19 @@ rule all:
         expand_species(BISMARK_IDX_T),
         [expand_species(f"{BWAMETH_PREFIX_T}{ext}") for ext in ("", ".0123", ".amb", ".ann", ".bwt.2bit.64", ".pac")],
         [expand_species(f"{MINIBWA_PREFIX_T}{ext}") for ext in (".l2b", ".mbw")],
-        expand_species(EXCLUDERANGES_BED_T),
         expand_species(CHROM_SIZES_T),
+        # Spike-in indices (ERCC + GFP for most, lambda for bisulfite aligners)
+        expand_species(STAR_ERCC_GFP_IDX_T),
+        [expand_species(f"{BOWTIE2_ERCC_GFP_PREFIX_T}{ext}") for ext in (".1.bt2", ".2.bt2", ".3.bt2", ".4.bt2", ".rev.1.bt2", ".rev.2.bt2")],
+        [expand_species(f"{BWA_MEM2_ERCC_GFP_PREFIX_T}{ext}") for ext in (".0123", ".amb", ".ann", ".bwt.2bit.64", ".pac")],
+        expand_species(SALMON_ERCC_GFP_IDX_T),
+        expand_species(MINIMAP2_ERCC_GFP_MMI_T),
+        expand_species(BISMARK_LAMBDA_IDX_T),
+        [expand_species(f"{BWAMETH_LAMBDA_PREFIX_T}{ext}") for ext in ("", ".0123", ".amb", ".ann", ".bwt.2bit.64", ".pac")],
+        [expand_species(f"{MINIBWA_ERCC_GFP_PREFIX_T}{ext}") for ext in (".l2b", ".mbw")],
+        expand_species(CHROM_SIZES_ERCC_GFP_T),
+        # Shared resources
+        expand_species(EXCLUDERANGES_BED_T),
         EXTRA_TARGETS
 
 
@@ -166,9 +192,198 @@ rule combine_with_spikes:
         "cat {input.genome} {input.ercc} {input.gfp} > {output}"
 
 
-rule star_index:
+rule star_ercc_gfp_index:
     input:
         combined = WITH_SPIKES_FA_T,
+        gtf = lambda wildcards: SPECIES[wildcards.assembly]["annotation_gtf"]
+    output:
+        directory(STAR_ERCC_GFP_IDX_T)
+    params:
+        sjdb_overhang = lambda wildcards: SPECIES[wildcards.assembly]["star_sjdb_overhang"]
+    threads:
+        config.get("threads", {}).get("star", 32)
+    log:
+        f"{LOG_DIR}/star_ercc_gfp_index/{{assembly}}_{{release}}.log"
+    conda:
+        "envs/star.yaml"
+    shell:
+        """
+        mkdir -p {output}
+        STAR --runThreadN {threads} \
+            --runMode genomeGenerate \
+            --genomeDir {output} \
+            --genomeFastaFiles {input.combined} \
+            --sjdbGTFfile {input.gtf} \
+            --sjdbOverhang {params.sjdb_overhang} &> {log}
+        """
+
+
+rule bowtie2_ercc_gfp_index:
+    input:
+        combined = WITH_SPIKES_FA_T
+    output:
+        [f"{BOWTIE2_ERCC_GFP_PREFIX_T}{ext}" for ext in (".1.bt2", ".2.bt2", ".3.bt2", ".4.bt2", ".rev.1.bt2", ".rev.2.bt2")]
+    params:
+        prefix = BOWTIE2_ERCC_GFP_PREFIX_T
+    threads:
+        config.get("threads", {}).get("bowtie2", 32)
+    log:
+        f"{LOG_DIR}/bowtie2_ercc_gfp_index/{{assembly}}_{{release}}.log"
+    conda:
+        "envs/bowtie2.yaml"
+    shell:
+        """
+        mkdir -p $(dirname {params.prefix})
+        bowtie2-build --threads {threads} {input.combined} {params.prefix} &> {log}
+        """
+
+
+rule bwa_mem2_ercc_gfp_index:
+    input:
+        combined = WITH_SPIKES_FA_T
+    output:
+        [f"{BWA_MEM2_ERCC_GFP_PREFIX_T}{ext}" for ext in (".0123", ".amb", ".ann", ".bwt.2bit.64", ".pac")]
+    params:
+        prefix = BWA_MEM2_ERCC_GFP_PREFIX_T
+    log:
+        f"{LOG_DIR}/bwa_mem2_ercc_gfp_index/{{assembly}}_{{release}}.log"
+    conda:
+        "envs/bwa-mem2.yaml"
+    shell:
+        """
+        mkdir -p $(dirname {params.prefix})
+        bwa-mem2 index -p {params.prefix} {input.combined} &> {log}
+        """
+
+
+rule salmon_ercc_gfp_index:
+    input:
+        transcripts = lambda wildcards: SPECIES[wildcards.assembly]["transcripts_fa"],
+        genome = GENOME_FA_T,
+        ercc = ERCC_FA,
+        gfp = GFP_FA
+    output:
+        directory(SALMON_ERCC_GFP_IDX_T)
+    params:
+        decoys = f"{SPECIES_DIR_T}/decoys_ercc_gfp.txt",
+        gentrome = f"{SPECIES_DIR_T}/gentrome_ercc_gfp.fa"
+    threads:
+        config.get("threads", {}).get("salmon", 32)
+    log:
+        f"{LOG_DIR}/salmon_ercc_gfp_index/{{assembly}}_{{release}}.log"
+    conda:
+        "envs/salmon.yaml"
+    shell:
+        """
+        grep "^>" {input.genome} | cut -d " " -f 1 | sed -e 's/>//g' > {params.decoys}
+        cat {input.transcripts} {input.ercc} {input.gfp} {input.genome} > {params.gentrome}
+        salmon index -t {params.gentrome} -d {params.decoys} -p {threads} -i {output} --gencode &> {log}
+        rm -f {params.decoys} {params.gentrome}
+        """
+
+
+rule minimap2_ercc_gfp_index:
+    input:
+        combined = WITH_SPIKES_FA_T
+    output:
+        MINIMAP2_ERCC_GFP_MMI_T
+    log:
+        f"{LOG_DIR}/minimap2_ercc_gfp_index/{{assembly}}_{{release}}.log"
+    conda:
+        "envs/minimap2.yaml"
+    shell:
+        """
+        mkdir -p $(dirname {output})
+        minimap2 -d {output} {input.combined} &> {log}
+        """
+
+
+rule bismark_lambda_index:
+    input:
+        genome = lambda wildcards: SPECIES[wildcards.assembly]["genome_fa_gz"],
+        lambda_genome = LAMBDA_FA_GZ
+    output:
+        directory(BISMARK_LAMBDA_IDX_T)
+    threads:
+        config.get("threads", {}).get("bismark_genome_preparation", 24)
+    log:
+        f"{LOG_DIR}/bismark_lambda_index/{{assembly}}_{{release}}.log"
+    conda:
+        "envs/bismark.yaml"
+    shell:
+        """
+        mkdir -p {output}
+        cat {input.genome} {input.lambda_genome} > {output}/{wildcards.assembly}.primary_assembly.genome.with_lambda.fa.gz
+        bismark_genome_preparation --bowtie2 --verbose --genomic_composition --parallel {threads} {output} &> {log}
+        """
+
+
+rule bwameth_lambda_index:
+    input:
+        genome = lambda wildcards: SPECIES[wildcards.assembly]["genome_fa_gz"],
+        lambda_genome = LAMBDA_FA_GZ
+    output:
+        [f"{BWAMETH_LAMBDA_PREFIX_T}{ext}" for ext in ("", ".0123", ".amb", ".ann", ".bwt.2bit.64", ".pac")]
+    params:
+        combined = f"{SPECIES_DIR_T}/bwa-meth_lambda_idx/{GENOME_STEM_T}.fa.gz"
+    log:
+        f"{LOG_DIR}/bwameth_lambda_index/{{assembly}}_{{release}}.log"
+    conda:
+        "envs/bwameth.yaml"
+    shell:
+        """
+        mkdir -p $(dirname {params.combined})
+        cat {input.genome} {input.lambda_genome} > {params.combined}
+        bwameth.py index-mem2 {params.combined} &> {log}
+        """
+
+
+rule minibwa_ercc_gfp_index:
+    input:
+        combined = WITH_SPIKES_FA_T
+    output:
+        [f"{MINIBWA_ERCC_GFP_PREFIX_T}{ext}" for ext in (".l2b", ".mbw")]
+    params:
+        prefix = MINIBWA_ERCC_GFP_PREFIX_T
+    threads:
+        config.get("threads", {}).get("minibwa", 8)
+    log:
+        f"{LOG_DIR}/minibwa_ercc_gfp_index/{{assembly}}_{{release}}.log"
+    conda:
+        "envs/minibwa.yaml"
+    shell:
+        """
+        mkdir -p $(dirname {params.prefix})
+        minibwa index -t{threads} {input.combined} {params.prefix} &> {log}
+        """
+
+
+rule chrom_sizes_ercc_gfp:
+    # Since the ERCC + GFP sequences are included in the spike-in indices,
+    # they need entries in chrom.sizes too - `faSize -detailed` lists one row
+    # per sequence, so running it once against the combined FASTA gives the
+    # same result as running it separately per file and concatenating.
+    input:
+        combined = WITH_SPIKES_FA_T
+    output:
+        CHROM_SIZES_ERCC_GFP_T
+    log:
+        f"{LOG_DIR}/chrom_sizes_ercc_gfp/{{assembly}}_{{release}}.log"
+    conda:
+        "envs/ucsc.yaml"
+    shell:
+        "faSize -detailed -tab {input.combined} > {output} 2> {log}"
+
+
+# ---------------------------------------------------------------------------
+# Primary-only index rules (no spike-ins)
+# These rules build indices from the primary genome assembly only, without
+# ERCC/GFP spike-ins or lambda phage sequences.
+# ---------------------------------------------------------------------------
+
+rule star_index:
+    input:
+        genome = GENOME_FA_T,
         gtf = lambda wildcards: SPECIES[wildcards.assembly]["annotation_gtf"]
     output:
         directory(STAR_IDX_T)
@@ -186,7 +401,7 @@ rule star_index:
         STAR --runThreadN {threads} \
             --runMode genomeGenerate \
             --genomeDir {output} \
-            --genomeFastaFiles {input.combined} \
+            --genomeFastaFiles {input.genome} \
             --sjdbGTFfile {input.gtf} \
             --sjdbOverhang {params.sjdb_overhang} &> {log}
         """
@@ -194,7 +409,7 @@ rule star_index:
 
 rule bowtie2_index:
     input:
-        combined = WITH_SPIKES_FA_T
+        genome = GENOME_FA_T
     output:
         [f"{BOWTIE2_PREFIX_T}{ext}" for ext in (".1.bt2", ".2.bt2", ".3.bt2", ".4.bt2", ".rev.1.bt2", ".rev.2.bt2")]
     params:
@@ -208,13 +423,13 @@ rule bowtie2_index:
     shell:
         """
         mkdir -p $(dirname {params.prefix})
-        bowtie2-build --threads {threads} {input.combined} {params.prefix} &> {log}
+        bowtie2-build --threads {threads} {input.genome} {params.prefix} &> {log}
         """
 
 
 rule bwa_mem2_index:
     input:
-        combined = WITH_SPIKES_FA_T
+        genome = GENOME_FA_T
     output:
         [f"{BWA_MEM2_PREFIX_T}{ext}" for ext in (".0123", ".amb", ".ann", ".bwt.2bit.64", ".pac")]
     params:
@@ -226,16 +441,16 @@ rule bwa_mem2_index:
     shell:
         """
         mkdir -p $(dirname {params.prefix})
-        bwa-mem2 index -p {params.prefix} {input.combined} &> {log}
+        bwa-mem2 index -p {params.prefix} {input.genome} &> {log}
         """
 
 
 rule salmon_index:
+    # Decoy-aware index with transcripts as targets and genome as decoy,
+    # but without ERCC/GFP spike-in sequences.
     input:
         transcripts = lambda wildcards: SPECIES[wildcards.assembly]["transcripts_fa"],
-        genome = GENOME_FA_T,
-        ercc = ERCC_FA,
-        gfp = GFP_FA
+        genome = GENOME_FA_T
     output:
         directory(SALMON_IDX_T)
     params:
@@ -250,7 +465,7 @@ rule salmon_index:
     shell:
         """
         grep "^>" {input.genome} | cut -d " " -f 1 | sed -e 's/>//g' > {params.decoys}
-        cat {input.transcripts} {input.ercc} {input.gfp} {input.genome} > {params.gentrome}
+        cat {input.transcripts} {input.genome} > {params.gentrome}
         salmon index -t {params.gentrome} -d {params.decoys} -p {threads} -i {output} --gencode &> {log}
         rm -f {params.decoys} {params.gentrome}
         """
@@ -258,7 +473,7 @@ rule salmon_index:
 
 rule minimap2_index:
     input:
-        combined = WITH_SPIKES_FA_T
+        genome = GENOME_FA_T
     output:
         MINIMAP2_MMI_T
     log:
@@ -268,14 +483,14 @@ rule minimap2_index:
     shell:
         """
         mkdir -p $(dirname {output})
-        minimap2 -d {output} {input.combined} &> {log}
+        minimap2 -d {output} {input.genome} &> {log}
         """
 
 
 rule bismark_index:
+    # Primary genome only, no lambda phage sequence.
     input:
-        genome = lambda wildcards: SPECIES[wildcards.assembly]["genome_fa_gz"],
-        lambda_genome = LAMBDA_FA_GZ
+        genome = lambda wildcards: SPECIES[wildcards.assembly]["genome_fa_gz"]
     output:
         directory(BISMARK_IDX_T)
     threads:
@@ -287,15 +502,15 @@ rule bismark_index:
     shell:
         """
         mkdir -p {output}
-        cat {input.genome} {input.lambda_genome} > {output}/{wildcards.assembly}.primary_assembly.genome.with_lambda.fa.gz
+        cp {input.genome} {output}/{wildcards.assembly}.primary_assembly.genome.fa.gz
         bismark_genome_preparation --bowtie2 --verbose --genomic_composition --parallel {threads} {output} &> {log}
         """
 
 
 rule bwameth_index:
+    # Primary genome only, no lambda phage sequence.
     input:
-        genome = lambda wildcards: SPECIES[wildcards.assembly]["genome_fa_gz"],
-        lambda_genome = LAMBDA_FA_GZ
+        genome = lambda wildcards: SPECIES[wildcards.assembly]["genome_fa_gz"]
     output:
         [f"{BWAMETH_PREFIX_T}{ext}" for ext in ("", ".0123", ".amb", ".ann", ".bwt.2bit.64", ".pac")]
     params:
@@ -307,14 +522,14 @@ rule bwameth_index:
     shell:
         """
         mkdir -p $(dirname {params.combined})
-        cat {input.genome} {input.lambda_genome} > {params.combined}
+        cp {input.genome} {params.combined}
         bwameth.py index-mem2 {params.combined} &> {log}
         """
 
 
 rule minibwa_index:
     input:
-        combined = WITH_SPIKES_FA_T
+        genome = GENOME_FA_T
     output:
         [f"{MINIBWA_PREFIX_T}{ext}" for ext in (".l2b", ".mbw")]
     params:
@@ -328,17 +543,14 @@ rule minibwa_index:
     shell:
         """
         mkdir -p $(dirname {params.prefix})
-        minibwa index -t{threads} {input.combined} {params.prefix} &> {log}
+        minibwa index -t{threads} {input.genome} {params.prefix} &> {log}
         """
 
 
 rule chrom_sizes:
-    # Since the ERCC + GFP sequences are included in several indices above,
-    # they need entries in chrom.sizes too - `faSize -detailed` lists one row
-    # per sequence, so running it once against the combined FASTA gives the
-    # same result as running it separately per file and concatenating.
+    # Chromosome sizes for the primary genome only (no spike-in entries).
     input:
-        combined = WITH_SPIKES_FA_T
+        genome = GENOME_FA_T
     output:
         CHROM_SIZES_T
     log:
@@ -346,4 +558,4 @@ rule chrom_sizes:
     conda:
         "envs/ucsc.yaml"
     shell:
-        "faSize -detailed -tab {input.combined} > {output} 2> {log}"
+        "faSize -detailed -tab {input.genome} > {output} 2> {log}"
