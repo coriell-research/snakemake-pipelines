@@ -3,10 +3,12 @@
 This is a snakemake pipeline for downloading and building the shared genome resources
 (annotation, sequence, and aligner indices).
 
-Each rule resolves its own tool via a pinned conda environment in `envs/`, built automatically
-by Snakemake when run with `--use-conda`. Several env pins are deliberately matched to the exact
-tool version another pipeline in this repo already uses to consume the corresponding index
-(see the comments in `envs/*.yaml`) rather than to the newest available release.
+Each aligner index is built with its [Snakemake wrapper](https://snakemake-wrappers.readthedocs.io/)
+(pinned to `v9.17.1`, except `minibwa`, whose wrapper first appears in `v9.18.0`). Each wrapper
+brings its own pinned conda environment, built automatically by Snakemake when run with
+`--use-conda`. The only local environments left in `envs/` are `ucsc.yaml` (`faSize`, which has no
+wrapper) and `salmon.yaml`, which overrides the salmon wrapper's own env so that the index matches
+the salmon 1.10.0 that `rnaseq-pe` uses to read it (the wrapper ships the salmon 2.x rewrite).
 
 ### Usage
 
@@ -36,6 +38,7 @@ GRCm39/M38, mouse GRCm38-mm10/M25):
    **Primary-only indices** (genome only, no spike-ins):
    - [STAR](https://github.com/alexdobin/STAR) index (`STAR_idx/`)
    - [Bowtie2](https://github.com/BenLangmead/bowtie2) index (`bt2_idx/`)
+   - [BWA](https://github.com/lh3/bwa) index (`bwa_idx/`)
    - [bwa-mem2](https://github.com/bwa-mem2/bwa-mem2) index (`bwa-mem2_idx/`)
    - [Salmon](https://salmon.readthedocs.io/) index (`salmon_idx/`) - decoy-aware with genome as decoy
    - [minimap2](https://github.com/lh3/minimap2) index (`mm2_idx/`)
@@ -46,6 +49,7 @@ GRCm39/M38, mouse GRCm38-mm10/M25):
    **Spike-in indices** (genome + ERCC92 + GFP, or + lambda for bisulfite aligners):
    - STAR index (`STAR_ercc_gfp_idx/`)
    - Bowtie2 index (`bt2_ercc_gfp_idx/`)
+   - BWA index (`bwa_ercc_gfp_idx/`)
    - bwa-mem2 index (`bwa-mem2_ercc_gfp_idx/`)
    - Salmon index (`salmon_ercc_gfp_idx/`) - transcripts + ERCC + GFP as targets, genome as decoy
    - minimap2 index (`mm2_ercc_gfp_idx/`)
@@ -53,7 +57,7 @@ GRCm39/M38, mouse GRCm38-mm10/M25):
    - bwa-meth index (`bwa-meth_lambda_idx/`) - genome + lambda phage
    - `minibwa` index (`minibwa_ercc_gfp_idx/`)
 
-3. Download the excludable/blacklist regions BED file (`excluderanges.bed`) directly from
+3. Download the excludable/blacklist regions BED file (`excluderanges.bed.gz`, kept gzipped) directly from
    [bedbase.org](https://bedbase.org), via each species' `excluderanges.bed_url` in `config.yaml`.
 
 4. Build **two `chrom.sizes` files** via UCSC's `faSize`:
@@ -65,17 +69,21 @@ GRCm39/M38, mouse GRCm38-mm10/M25):
 ```
 <resources_dir>/<assembly>/GENCODE/<release>/
 ├── <assembly>.primary_assembly.genome.fa.gz          # Primary genome (gzipped)
+├── <assembly>.primary_assembly.genome.with_lambda.fa.gz  # Genome + lambda (Bismark reads this)
 ├── <assembly>.primary_assembly.genome.fa.chrom_sizes # Chrom sizes (primary only)
 ├── <assembly>.primary_assembly.genome.fa.ercc_gfp.chrom_sizes  # Chrom sizes (with spikes)
 ├── gencode.v*.basic.annotation.gtf.gz
 ├── gencode.v*.transcripts.fa.gz
-├── excluderanges.bed
+├── excluderanges.bed.gz
 │
 ├── STAR_idx/                  # Primary only
 ├── STAR_ercc_gfp_idx/         # With ERCC + GFP
 │
 ├── bt2_idx/                   # Primary only
 ├── bt2_ercc_gfp_idx/          # With ERCC + GFP
+│
+├── bwa_idx/                   # Primary only
+├── bwa_ercc_gfp_idx/          # With ERCC + GFP
 │
 ├── bwa-mem2_idx/              # Primary only
 ├── bwa-mem2_ercc_gfp_idx/     # With ERCC + GFP
@@ -102,16 +110,28 @@ GRCm39/M38, mouse GRCm38-mm10/M25):
   wildcards rather than duplicated per species, since directory and genome-stem naming is uniform
   across all three builds (`<resources_dir>/<assembly>/GENCODE/<release>/...`,
   `<assembly>.primary_assembly.genome[.fa[.gz]]`).
-- The decompressed, plain-text copies of the genome/annotation/transcript FASTA/GTF needed to
-  build most indices are transient (`temp()`) - the persisted downloads stay gzipped, matching
-  the existing resource layout on disk.
-- Bismark and bwa-meth accept gzipped FASTA directly, so their rules concatenate the
-  still-gzipped genome + lambda downloads rather than decompressing first (the same trick
-  `rrbs-pe`'s `merge_lanes` rule uses for multi-lane FASTQs).
-- STAR/Bowtie2/bwa-mem2/minimap2/`minibwa` spike-in indices all use a single, materialized
-  genome+ERCC+GFP FASTA per species (built once by `rule combine_with_spikes`). Salmon builds
-  its own materialized `gentrome.fa` instead, since ERCC/GFP need to land in its target section
-  rather than its decoy section.
+- Every download stays gzipped. Bowtie2, BWA, bwa-mem2, minimap2, `minibwa`, Salmon, Bismark,
+  bwa-meth and `faSize` all read the `.gz` files directly. Combined FASTAs are built by
+  concatenating the gzipped files (`cat a.fa.gz b.fa.gz > c.fa.gz`, which is a valid gzip file),
+  the same trick `rrbs-pe`'s `merge_lanes` rule uses for multi-lane FASTQs. The only
+  decompressed files are the genome, genome+ERCC+GFP FASTA and GTF that STAR needs (STAR can't
+  read gzip), and those are `temp()`, so they're deleted once the STAR indices are built.
+- `rule combine_with_lambda` builds the genome + lambda FASTA used by Bismark and bwa-meth.
+  That combined FASTA is kept (not
+  `temp()`), because the Bismark wrapper places a relative symlink to its input FASTA inside the
+  index directory, and Bismark reads that FASTA again at alignment time. For the same reason,
+  `bismark_idx/` holds a symlink to the downloaded genome rather than a copy.
+- `rule bwameth_reference` copies the reference FASTA into `bwa-meth[_lambda]_idx/`, because
+  bwa-meth's aligner expects the reference next to its `.bwameth.c2t*` index files and the
+  wrapper only writes the index files. The bwa-meth wrapper builds the index in the system temp
+  directory before moving it into place, so set `TMPDIR` if `/tmp` is small.
+- The Bismark wrapper runs `--parallel threads/2` (one half for each conversion), so
+  `threads.bismark_genome_preparation` is the total thread count for that job.
+- STAR/Bowtie2/BWA/bwa-mem2/minimap2/`minibwa` spike-in indices all use a single, materialized
+  genome+ERCC+GFP FASTA per species (`<assembly>.primary_assembly.genome.with_spikes.fa.gz`,
+  built once by `rule combine_with_spikes` as a `temp()` file). Salmon gets its own materialized
+  `gentrome[_ercc_gfp].fa.gz` and `decoys.txt` (both `temp()`) instead, since
+  ERCC/GFP need to land in its target section rather than its decoy section.
 - The ERCC92, GFP, and lambda phage spike-in FASTAs have no canonical public source, so they're
   downloaded from this repo's own `generate-resources/data/` directory (see `spike_ins` in
   `config.yaml`) into `<resources_dir>/spike_ins/`, and are shared across all three species

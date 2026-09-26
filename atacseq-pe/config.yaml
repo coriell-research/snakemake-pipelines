@@ -7,14 +7,14 @@ bowtie2:
   flags: "--very-sensitive --no-mixed --no-discordant"
 
 genrich:
-    blacklist: "/home/gennaro/data/references/GRCh38/GENCODE/v48/excluderanges.bed"
+    blacklist: "/home/gennaro/data/references/GRCh38/GENCODE/v48/excluderanges.bed.gz"
     flags: "-r -e chrM -S"
 
 bedgraph2bigwig:
     chrom_sizes: "/home/gennaro/data/references/GRCh38/GENCODE/v48/GRCh38.primary_assembly.genome.fa.chrom_sizes"
 
 deeptools:
-  blacklist: "/home/gennaro/data/references/GRCh38/GENCODE/v48/excluderanges.bed"
+  blacklist: "/home/gennaro/data/references/GRCh38/GENCODE/v48/excluderanges.bed.gz"
   gtf: "/home/gennaro/data/references/GRCh38/GENCODE/v48/gencode.v48.basic.annotation.gtf.gz"
 
 featurecounts:

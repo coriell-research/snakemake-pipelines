@@ -1,8 +1,0 @@
-channels:
-  - bioconda
-  - conda-forge
-dependencies:
-  # pinned to match this server's existing, already-vetted "bwameth" conda
-  # env (bwameth=0.2.9, bwa-mem2=2.3) that instructions.md's bwa-meth index
-  # command assumes is active, rather than bioconda's slightly newer 0.2.10.
-  - bwameth=0.2.9

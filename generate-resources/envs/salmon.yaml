@@ -7,4 +7,6 @@ dependencies:
   # across salmon versions isn't guaranteed. Bioconda's newest salmon release
   # (2.x) is a Rust rewrite of the tool, so this is deliberately NOT pinned to
   # the newest available version - bump both envs together if you upgrade.
+  # The salmon index rules use the bio/salmon/index wrapper, whose own env
+  # ships salmon 2.x; the rules' `conda:` directive points here to override it.
   - salmon=1.10.0

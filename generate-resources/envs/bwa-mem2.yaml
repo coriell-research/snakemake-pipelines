@@ -1,8 +1,0 @@
-channels:
-  - bioconda
-  - conda-forge
-dependencies:
-  # no other pipeline in this repo pins bwa-mem2 yet; matched to the version
-  # already bundled with this server's installed "bwameth" env (also used by
-  # the bwa-meth index rule below) to keep the two related indices consistent.
-  - bwa-mem2=2.3

@@ -1,7 +1,0 @@
-channels:
-  - bioconda
-  - conda-forge
-dependencies:
-  # must match rnaseq-pe/envs/star.yaml exactly - STAR genome indices are tied
-  # to the STAR major version that built them.
-  - star=2.7.11b

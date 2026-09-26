@@ -40,7 +40,7 @@ mouse:
       bed_url: "https://api.bedbase.org/v1/files/files/9/9/9975fc0dabb9342939f4da104f5e5724.bed.gz"
 
 # Spike-in / decoy sequences used by several of the human indices (STAR,
-# bowtie2, bwa-mem2, salmon, minimap2, minibwa include ERCC+GFP; Bismark and
+# bowtie2, bwa, bwa-mem2, salmon, minimap2, minibwa include ERCC+GFP; Bismark and
 # bwa-meth include the lambda phage genome instead.
 spike_ins:
   ercc_url: "https://github.com/coriell-research/snakemake-pipelines/raw/refs/heads/main/generate-resources/data/ERCC92.fa.gz"

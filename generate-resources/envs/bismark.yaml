@@ -1,8 +1,0 @@
-channels:
-  - bioconda
-  - conda-forge
-dependencies:
-  # must match rrbs-pe/envs/bismark.yaml exactly - Bisulfite_Genome indices
-  # are tied to a Bismark/bowtie2 major version, and rrbs-pe aligns against
-  # the index this rule builds.
-  - bismark=3.1.0
