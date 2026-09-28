@@ -7,11 +7,11 @@ salmon:
   lib_type: "A"
   gibbs: 30
   extra_params: "--gcBias --seqBias --posBias"
-  genome_fa: "/home/gennaro/data/references/GRCh38/GENCODE/v48/GRCh38.primary_assembly.genome.fa"
-  decoys: "/home/gennaro/data/references/GRCh38/GENCODE/v48/decoys.txt"
+  # decompressed (temp) by the workflow for gffread; decoy names are taken from its headers
+  genome_fa_gz: "/mnt/data/references/GRCh38/GENCODE/v48/GRCh38.primary_assembly.genome.fa.gz"
 
 star:
-  index_dir: "/home/gennaro/data/references/GRCh38/GENCODE/v48/STAR_idx" 
+  index_dir: "/mnt/data/references/GRCh38/GENCODE/v48/STAR_ercc_gfp_idx" # (hg38 with ERCC + GFP)
   threads: 12
   readFilesCommand: "zcat" 
   twopassMode: "Basic" 
@@ -33,6 +33,6 @@ star:
   outSAMattributes: "Standard"
 
 stringtie:
-  guide_gtf: "/home/gennaro/data/references/GRCh38/GENCODE/v48/gencode.v48.basic.annotation.gtf.gz"
+  guide_gtf: "/mnt/data/references/GRCh38/GENCODE/v48/gencode.v48.basic.annotation.gtf.gz"
   lib_type: "--rf"
 

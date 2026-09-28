@@ -32,9 +32,10 @@ the salmon 1.10.0 that `rnaseq-pe` uses to read it (the wrapper ships the salmon
    `config.yaml`, scaled down to `--cores` if that's lower. To allow more concurrent builds
    on a large-memory server, pass e.g. `--resources index_jobs=2`.
 
-Everything is written under `<resources_dir>/<assembly>/GENCODE/<release>/...`, matching the
-paths already hardcoded into `atacseq-pe/config.yaml`, `rnaseq-pe/config.yaml`, and
-`rrbs-pe/config.yaml`.
+Everything is written under `<resources_dir>/<assembly>/GENCODE/<release>/...`. The other
+pipelines' configs (`atacseq-pe`, `rnaseq-pe`, `rrbs-pe`, `de-novo-transcript-assembly`)
+expect this tree at the shared location `/mnt/data/references`, and default to the spike-in
+indices (ERCC + GFP, or lambda for Bismark).
 
 ### Overview
 

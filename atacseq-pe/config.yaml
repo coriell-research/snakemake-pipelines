@@ -2,20 +2,21 @@ fastp:
   extra_params: "--detect_adapter_for_pe"
 
 bowtie2:
-  idx: "/home/gennaro/data/references/GRCh38/GENCODE/v48/bt2_idx/GRCh38.primary_assembly.genome"
+  idx: "/mnt/data/references/GRCh38/GENCODE/v48/bt2_ercc_gfp_idx/GRCh38.primary_assembly.genome" # (hg38 with ERCC + GFP)
   max_insert: 2000
   flags: "--very-sensitive --no-mixed --no-discordant"
 
 genrich:
-    blacklist: "/home/gennaro/data/references/GRCh38/GENCODE/v48/excluderanges.bed.gz"
+    blacklist: "/mnt/data/references/GRCh38/GENCODE/v48/excluderanges.bed.gz"
     flags: "-r -e chrM -S"
 
 bedgraph2bigwig:
-    chrom_sizes: "/home/gennaro/data/references/GRCh38/GENCODE/v48/GRCh38.primary_assembly.genome.fa.chrom_sizes"
+    # must list the same contigs as the bowtie2 index above (incl. ERCC + GFP)
+    chrom_sizes: "/mnt/data/references/GRCh38/GENCODE/v48/GRCh38.primary_assembly.genome.fa.ercc_gfp.chrom_sizes"
 
 deeptools:
-  blacklist: "/home/gennaro/data/references/GRCh38/GENCODE/v48/excluderanges.bed.gz"
-  gtf: "/home/gennaro/data/references/GRCh38/GENCODE/v48/gencode.v48.basic.annotation.gtf.gz"
+  blacklist: "/mnt/data/references/GRCh38/GENCODE/v48/excluderanges.bed.gz"
+  gtf: "/mnt/data/references/GRCh38/GENCODE/v48/gencode.v48.basic.annotation.gtf.gz"
 
 featurecounts:
-  promoters: "/home/gennaro/data/references/GRCh38/GENCODE/v48/gencode.v48.promoter_windows.gff3.gz"
+  promoters: "/mnt/data/references/GRCh38/GENCODE/v48/gencode.v48.promoter_windows.gff3.gz"

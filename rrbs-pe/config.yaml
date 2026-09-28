@@ -3,8 +3,11 @@ work_dir: "../data"
 trim_galore:
   extra_params: ""
 
-# /home/gennaro/data/references/GRCm38/GENCODE/M25/bismark_idx (mm10 with ERCC + GFP)
-# /home/gennaro/data/references/GRCm39/GENCODE/M38/bismark_idx (mm39 with ERCC + GFP)
+# Bisulfite indices carry the lambda phage spike-in (not ERCC + GFP):
+# /mnt/data/references/GRCh38/GENCODE/v48/bismark_lambda_idx (hg38 with lambda)
+# /mnt/data/references/GRCm38/GENCODE/M25/bismark_lambda_idx (mm10 with lambda)
+# /mnt/data/references/GRCm39/GENCODE/M38/bismark_lambda_idx (mm39 with lambda)
+# (swap bismark_lambda_idx for bismark_idx to use the primary assembly without lambda)
 bismark:
-  genome_dir: "/home/gennaro/data/references/GRCh38/GENCODE/v48/bismark_idx" # (hg38 with ERCC + GFP)
+  genome_dir: "/mnt/data/references/GRCh38/GENCODE/v48/bismark_lambda_idx" # (hg38 with lambda)
   extra_params: ""
