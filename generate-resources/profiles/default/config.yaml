@@ -1,0 +1,9 @@
+# Workflow profile, loaded automatically by Snakemake when run from this directory
+# (override with --workflow-profile <dir>, or disable with --workflow-profile none).
+
+# Scratch space for jobs. Snakemake exports this as $TMPDIR/$TMP/$TEMP, which the
+# index wrappers use (via Python's tempfile) instead of /tmp. Resolved to an absolute
+# path (./tmp) so tools that chdir still find it. The directory is created by the
+# Snakefile; if it were missing, tempfile would silently fall back to /tmp.
+default-resources:
+  - "tmpdir=__import__('os').path.abspath('tmp')"

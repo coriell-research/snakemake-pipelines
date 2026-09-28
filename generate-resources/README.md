@@ -21,6 +21,10 @@ the salmon 1.10.0 that `rnaseq-pe` uses to read it (the wrapper ships the salmon
    URLs for human/mouse, and `spike_ins`
 3. Run the pipeline: `mamba activate snakemake && snakemake --use-conda --cores <N>`
 
+   The workflow profile in `profiles/default` is picked up automatically and points job
+   scratch space (`$TMPDIR`) at `./tmp` rather than `/tmp`, since the index builds (STAR,
+   Bismark, etc.) can exceed the free space on `/tmp`.
+
 Everything is written under `<resources_dir>/<assembly>/GENCODE/<release>/...`, matching the
 paths already hardcoded into `atacseq-pe/config.yaml`, `rnaseq-pe/config.yaml`, and
 `rrbs-pe/config.yaml`.

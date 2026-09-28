@@ -1,3 +1,4 @@
+import os
 import re
 from snakemake.utils import validate
 
@@ -9,6 +10,10 @@ validate(config, "schemas/config.schema.yaml")
 RESOURCES_DIR = config["resources_dir"]
 SPIKE_INS = config["spike_ins"]
 LOG_DIR = "logs"
+
+# Job scratch dir set by profiles/default (default-resources: tmpdir). It must exist,
+# otherwise the wrappers' tempfile calls silently fall back to /tmp.
+os.makedirs("tmp", exist_ok=True)
 
 
 def basename_of(url):
