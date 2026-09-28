@@ -25,11 +25,12 @@ the salmon 1.10.0 that `rnaseq-pe` uses to read it (the wrapper ships the salmon
    scratch space (`$TMPDIR`) at `./tmp` rather than `/tmp`, since the index builds (STAR,
    Bismark, etc.) can exceed the free space on `/tmp`.
 
-   Cap total memory with `--resources mem_mb=<MB>` (e.g. ~90% of the server's RAM). The
-   bwa-mem2 (~130 GB each) and bwa-meth (~260 GB each) index jobs reserve memory via
-   `mem_mb` in `config.yaml`, but Snakemake only uses that to limit how many run at once
-   when a total is given. Without a total, all 12 of them start together and get OOM-killed
-   on any server with less than ~2 TB of RAM.
+   The profile also runs the index builds one at a time (`resources: index_jobs=1`), since
+   each can take 50-250 GB of RAM (bwa-mem2 ~130 GB and bwa-meth ~250 GB for GRCh38) and
+   running them together gets them OOM-killed. Downloads and other small jobs still run
+   alongside. Multi-threaded index builds use the thread counts under `threads` in
+   `config.yaml`, scaled down to `--cores` if that's lower. To allow more concurrent builds
+   on a large-memory server, pass e.g. `--resources index_jobs=2`.
 
 Everything is written under `<resources_dir>/<assembly>/GENCODE/<release>/...`, matching the
 paths already hardcoded into `atacseq-pe/config.yaml`, `rnaseq-pe/config.yaml`, and

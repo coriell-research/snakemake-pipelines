@@ -7,3 +7,9 @@
 # Snakefile; if it were missing, tempfile would silently fall back to /tmp.
 default-resources:
   - "tmpdir=__import__('os').path.abspath('tmp')"
+
+# Index builds are memory-hungry (bwa-mem2 ~130 GB, bwa-meth ~250 GB for GRCh38), so every
+# *_index rule takes one of these slots and only one runs at a time. Raise it on the command
+# line (e.g. --resources index_jobs=2) on a server with enough RAM.
+resources:
+  - "index_jobs=1"

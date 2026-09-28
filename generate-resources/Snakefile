@@ -310,6 +310,8 @@ rule star_ercc_gfp_index:
         extra = ""
     threads:
         config.get("threads", {}).get("star", 32)
+    resources:
+        index_jobs = 1
     log:
         f"{LOG_DIR}/star_ercc_gfp_index/{{assembly}}_{{release}}.log"
     wrapper:
@@ -325,6 +327,8 @@ rule bowtie2_ercc_gfp_index:
         extra = ""
     threads:
         config.get("threads", {}).get("bowtie2", 32)
+    resources:
+        index_jobs = 1
     log:
         f"{LOG_DIR}/bowtie2_ercc_gfp_index/{{assembly}}_{{release}}.log"
     wrapper:
@@ -338,6 +342,8 @@ rule bwa_ercc_gfp_index:
         multiext(BWA_ERCC_GFP_PREFIX_T, *BWA_EXTS)
     params:
         extra = "-a bwtsw"
+    resources:
+        index_jobs = 1
     log:
         f"{LOG_DIR}/bwa_ercc_gfp_index/{{assembly}}_{{release}}.log"
     wrapper:
@@ -350,7 +356,7 @@ rule bwa_mem2_ercc_gfp_index:
     output:
         multiext(BWA_MEM2_ERCC_GFP_PREFIX_T, *BWA_MEM2_EXTS)
     resources:
-        mem_mb = config.get("mem_mb", {}).get("bwa_mem2", 130000)
+        index_jobs = 1
     log:
         f"{LOG_DIR}/bwa_mem2_ercc_gfp_index/{{assembly}}_{{release}}.log"
     wrapper:
@@ -367,6 +373,8 @@ rule salmon_ercc_gfp_index:
         extra = "--gencode"
     threads:
         config.get("threads", {}).get("salmon", 32)
+    resources:
+        index_jobs = 1
     log:
         f"{LOG_DIR}/salmon_ercc_gfp_index/{{assembly}}_{{release}}.log"
     # Overrides the wrapper's own env (salmon 2.x) - see envs/salmon.yaml.
@@ -383,6 +391,8 @@ rule minimap2_ercc_gfp_index:
         MINIMAP2_ERCC_GFP_MMI_T
     params:
         extra = ""
+    resources:
+        index_jobs = 1
     log:
         f"{LOG_DIR}/minimap2_ercc_gfp_index/{{assembly}}_{{release}}.log"
     wrapper:
@@ -399,6 +409,8 @@ rule bismark_lambda_index:
     # The wrapper runs both conversions in parallel with --parallel threads//2.
     threads:
         config.get("threads", {}).get("bismark_genome_preparation", 24)
+    resources:
+        index_jobs = 1
     log:
         f"{LOG_DIR}/bismark_lambda_index/{{assembly}}_{{release}}.log"
     wrapper:
@@ -411,7 +423,7 @@ rule bwameth_lambda_index:
     output:
         multiext(BWAMETH_LAMBDA_REF_T, *BWAMETH_EXTS)
     resources:
-        mem_mb = config.get("mem_mb", {}).get("bwameth", 260000)
+        index_jobs = 1
     log:
         f"{LOG_DIR}/bwameth_lambda_index/{{assembly}}_{{release}}.log"
     wrapper:
@@ -426,7 +438,9 @@ rule minibwa_ercc_gfp_index:
     params:
         extra = ""
     threads:
-        config.get("threads", {}).get("minibwa", 8)
+        config.get("threads", {}).get("minibwa", 32)
+    resources:
+        index_jobs = 1
     log:
         f"{LOG_DIR}/minibwa_ercc_gfp_index/{{assembly}}_{{release}}.log"
     # First wrapper release to include bio/minibwa/index.
@@ -468,6 +482,8 @@ rule star_index:
         extra = ""
     threads:
         config.get("threads", {}).get("star", 32)
+    resources:
+        index_jobs = 1
     log:
         f"{LOG_DIR}/star_index/{{assembly}}_{{release}}.log"
     wrapper:
@@ -483,6 +499,8 @@ rule bowtie2_index:
         extra = ""
     threads:
         config.get("threads", {}).get("bowtie2", 32)
+    resources:
+        index_jobs = 1
     log:
         f"{LOG_DIR}/bowtie2_index/{{assembly}}_{{release}}.log"
     wrapper:
@@ -496,6 +514,8 @@ rule bwa_index:
         multiext(BWA_PREFIX_T, *BWA_EXTS)
     params:
         extra = "-a bwtsw"
+    resources:
+        index_jobs = 1
     log:
         f"{LOG_DIR}/bwa_index/{{assembly}}_{{release}}.log"
     wrapper:
@@ -508,7 +528,7 @@ rule bwa_mem2_index:
     output:
         multiext(BWA_MEM2_PREFIX_T, *BWA_MEM2_EXTS)
     resources:
-        mem_mb = config.get("mem_mb", {}).get("bwa_mem2", 130000)
+        index_jobs = 1
     log:
         f"{LOG_DIR}/bwa_mem2_index/{{assembly}}_{{release}}.log"
     wrapper:
@@ -527,6 +547,8 @@ rule salmon_index:
         extra = "--gencode"
     threads:
         config.get("threads", {}).get("salmon", 32)
+    resources:
+        index_jobs = 1
     log:
         f"{LOG_DIR}/salmon_index/{{assembly}}_{{release}}.log"
     # Overrides the wrapper's own env (salmon 2.x) - see envs/salmon.yaml.
@@ -543,6 +565,8 @@ rule minimap2_index:
         MINIMAP2_MMI_T
     params:
         extra = ""
+    resources:
+        index_jobs = 1
     log:
         f"{LOG_DIR}/minimap2_index/{{assembly}}_{{release}}.log"
     wrapper:
@@ -560,6 +584,8 @@ rule bismark_index:
     # The wrapper runs both conversions in parallel with --parallel threads//2.
     threads:
         config.get("threads", {}).get("bismark_genome_preparation", 24)
+    resources:
+        index_jobs = 1
     log:
         f"{LOG_DIR}/bismark_index/{{assembly}}_{{release}}.log"
     wrapper:
@@ -573,7 +599,7 @@ rule bwameth_index:
     output:
         multiext(BWAMETH_REF_T, *BWAMETH_EXTS)
     resources:
-        mem_mb = config.get("mem_mb", {}).get("bwameth", 260000)
+        index_jobs = 1
     log:
         f"{LOG_DIR}/bwameth_index/{{assembly}}_{{release}}.log"
     wrapper:
@@ -588,7 +614,9 @@ rule minibwa_index:
     params:
         extra = ""
     threads:
-        config.get("threads", {}).get("minibwa", 8)
+        config.get("threads", {}).get("minibwa", 32)
+    resources:
+        index_jobs = 1
     log:
         f"{LOG_DIR}/minibwa_index/{{assembly}}_{{release}}.log"
     # First wrapper release to include bio/minibwa/index.
