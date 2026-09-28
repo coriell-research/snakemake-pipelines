@@ -3,7 +3,7 @@
 # `snakemake` workflows developed for Coriell Bioinformatics 
 
 > [!Warning]
-> This project use Claude Code for coding assistance.
+> This project uses Claude Code for coding assistance.
 
 ## Current Workflows:
 
