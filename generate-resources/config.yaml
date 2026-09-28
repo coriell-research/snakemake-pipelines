@@ -53,3 +53,12 @@ threads:
   salmon: 32
   bismark_genome_preparation: 24
   minibwa: 8
+
+# Peak memory (MB) reserved per job for the memory-hungry index builds. bwa-mem2 index
+# was OOM-killed on GRCh38 while holding ~125 GB of virtual memory, so reserve 130 GB;
+# bwa-meth indexes a C->T/G->A converted copy that is twice the genome, so reserve double.
+# These only throttle jobs when a total is given at runtime, e.g.
+# `snakemake ... --resources mem_mb=500000`.
+mem_mb:
+  bwa_mem2: 130000
+  bwameth: 260000

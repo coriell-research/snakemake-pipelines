@@ -160,3 +160,13 @@ properties:
       minibwa:
         type: integer
         minimum: 1
+  mem_mb:
+    type: object
+    additionalProperties: false
+    properties:
+      bwa_mem2:
+        type: integer
+        minimum: 1
+      bwameth:
+        type: integer
+        minimum: 1

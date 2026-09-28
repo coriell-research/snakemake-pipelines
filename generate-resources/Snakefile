@@ -349,6 +349,8 @@ rule bwa_mem2_ercc_gfp_index:
         WITH_SPIKES_FA_GZ_T
     output:
         multiext(BWA_MEM2_ERCC_GFP_PREFIX_T, *BWA_MEM2_EXTS)
+    resources:
+        mem_mb = config.get("mem_mb", {}).get("bwa_mem2", 130000)
     log:
         f"{LOG_DIR}/bwa_mem2_ercc_gfp_index/{{assembly}}_{{release}}.log"
     wrapper:
@@ -408,6 +410,8 @@ rule bwameth_lambda_index:
         BWAMETH_LAMBDA_REF_T
     output:
         multiext(BWAMETH_LAMBDA_REF_T, *BWAMETH_EXTS)
+    resources:
+        mem_mb = config.get("mem_mb", {}).get("bwameth", 260000)
     log:
         f"{LOG_DIR}/bwameth_lambda_index/{{assembly}}_{{release}}.log"
     wrapper:
@@ -503,6 +507,8 @@ rule bwa_mem2_index:
         species_file("genome_fa_gz")
     output:
         multiext(BWA_MEM2_PREFIX_T, *BWA_MEM2_EXTS)
+    resources:
+        mem_mb = config.get("mem_mb", {}).get("bwa_mem2", 130000)
     log:
         f"{LOG_DIR}/bwa_mem2_index/{{assembly}}_{{release}}.log"
     wrapper:
@@ -566,6 +572,8 @@ rule bwameth_index:
         BWAMETH_REF_T
     output:
         multiext(BWAMETH_REF_T, *BWAMETH_EXTS)
+    resources:
+        mem_mb = config.get("mem_mb", {}).get("bwameth", 260000)
     log:
         f"{LOG_DIR}/bwameth_index/{{assembly}}_{{release}}.log"
     wrapper:
