@@ -496,7 +496,6 @@ rule muse:
     shell:
         """
         MuSE call -O {params.call_prefix} -f {input.ref} -n {threads} {input.tumor} {input.normal} 2> {log}
-        touch {input.dbsnp_tbi}
         MuSE sump -I {params.call_prefix}.MuSE.txt -E -n {threads} -O {params.work_prefix}.vcf -D {input.dbsnp} 2>> {log}
         bgzip {params.work_prefix}.vcf
         tabix -p vcf {params.work_prefix}.vcf.gz
@@ -669,7 +668,10 @@ rule deepsomatic_pass_norm:
         "envs/bcftools.yaml"
     shell:
         """
+        # DeepSomatic declares FMT/NAF as Number=R but writes one value per ALT
+        # (Number=A); fix the header so norm can split multiallelic sites
         bcftools view -f 'PASS' {input.vcf} | \
+        sed '/^##FORMAT=<ID=NAF,/s/Number=R/Number=A/' | \
         bcftools norm -c {params.check_ref} -m {params.multi_allele} -w {params.buff} -f {input.ref} | \
         bcftools view -Oz -o {output.vcf} && \
         bcftools index -t {output.vcf}
@@ -788,7 +790,9 @@ rule cnvkit_access:
         "cnvkit.py access {input.fasta} -o {output} &> {log}"
 
 
-CNVKIT_BAITS_STEM = os.path.splitext(os.path.basename(config["cnvkit"]["baits"]))[0]
+# CNVkit can't read gzipped BEDs; use the plain copy made by unzip_baits
+CNVKIT_BAITS = config["cnvkit"]["baits"].removesuffix(".gz")
+CNVKIT_BAITS_STEM = os.path.splitext(os.path.basename(CNVKIT_BAITS))[0]
 
 rule cnvkit_batch_build_reference:
     input:
@@ -796,7 +800,7 @@ rule cnvkit_batch_build_reference:
         bai = expand(f"{MARKDUP_OUT}/{{sample}}.bam.bai", sample=ALL_NORMAL_SAMPLES),
         fasta = config["ref"]["fasta"],
         fasta_fai = config["ref"]["fai"],
-        baits = config["cnvkit"]["baits"],
+        baits = CNVKIT_BAITS,
         access = f"{RESOURCES_OUT}/access.bed",
     output:
         reference = f"{CNVKIT_OUT}/reference.cnn",
