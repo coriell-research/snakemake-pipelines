@@ -697,7 +697,7 @@ rule consensus_calls_paired:
         "envs/bcftools.yaml"
     shell:
         """
-        bcftools isec -c all -n+{params.min_callers} {input.mutect_vcf} {input.muse_vcf} {input.strelka_vcf} {input.deepsomatic_vcf} -p {params.prefix_dir}
+        bcftools isec -c all -n+{params.min_callers} -Oz {input.mutect_vcf} {input.muse_vcf} {input.strelka_vcf} {input.deepsomatic_vcf} -p {params.prefix_dir}
 
         awk 'BEGIN {{OFS="\t"}} {{print $1, $2}}' {params.prefix_dir}/sites.txt > {params.prefix_dir}/regions.txt
 
@@ -722,7 +722,7 @@ rule consensus_calls_tumor_only:
         "envs/bcftools.yaml"
     shell:
         """
-        bcftools isec -c all -n+{params.min_callers} {input.mutect_vcf} {input.deepsomatic_vcf} -p {params.prefix_dir}
+        bcftools isec -c all -n+{params.min_callers} -Oz {input.mutect_vcf} {input.deepsomatic_vcf} -p {params.prefix_dir}
 
         awk 'BEGIN {{OFS="\t"}} {{print $1, $2}}' {params.prefix_dir}/sites.txt > {params.prefix_dir}/regions.txt
 
