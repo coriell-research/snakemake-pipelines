@@ -102,6 +102,7 @@ GATK_RESOURCE_URLS = {
     "Homo_sapiens_assembly38.fasta.64.bwt": f"{GATK_REF_BUCKET}/Homo_sapiens_assembly38.fasta.64.bwt",
     "Homo_sapiens_assembly38.fasta.64.pac": f"{GATK_REF_BUCKET}/Homo_sapiens_assembly38.fasta.64.pac",
     "Homo_sapiens_assembly38.fasta.64.sa": f"{GATK_REF_BUCKET}/Homo_sapiens_assembly38.fasta.64.sa",
+    "Homo_sapiens_assembly38.fasta.64.alt": f"{GATK_REF_BUCKET}/Homo_sapiens_assembly38.fasta.64.alt",
     "Homo_sapiens_assembly38.dbsnp138.vcf.gz": f"{GATK_REF_BUCKET}/Homo_sapiens_assembly38.dbsnp138.vcf.gz",
     "Homo_sapiens_assembly38.dbsnp138.vcf.gz.tbi": f"{GATK_REF_BUCKET}/Homo_sapiens_assembly38.dbsnp138.vcf.gz.tbi",
     "1000g_pon.hg38.vcf.gz": f"{GATK_MUTECT_BUCKET}/1000g_pon.hg38.vcf.gz",
@@ -218,7 +219,9 @@ rule bwa_mem:
             f"{FASTP_OUT}/{{sample}}/{{lane}}.trimmed.1.fq.gz",
             f"{FASTP_OUT}/{{sample}}/{{lane}}.trimmed.2.fq.gz",
         ],
-        idx = multiext(config["ref"]["bwa_index_prefix"], ".amb", ".ann", ".bwt", ".pac", ".sa"),
+        # .alt makes bwa mem alt-aware: it's picked up automatically from the
+        # index prefix. Keep it last, since the wrapper derives the prefix from idx[0].
+        idx = multiext(config["ref"]["bwa_index_prefix"], ".amb", ".ann", ".bwt", ".pac", ".sa", ".alt"),
     output:
         f"{BWA_OUT}/{{sample}}/{{lane}}.sorted.bam"
     threads:
@@ -843,7 +846,8 @@ rule cnvkit_batch:
         mem_mb = 8192
     params:
         method = config["cnvkit"]["method"],
-        extra = "",
+        # The wrapper doesn't pass threads to CNVkit; without -p coverage is single-process
+        extra = lambda w, threads: f"-p {threads}",
     log:
         f"{CNVKIT_OUT}/{{patient}}.log"
     wrapper:
