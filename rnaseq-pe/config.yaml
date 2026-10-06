@@ -1,14 +1,10 @@
 fastp:
-  threads: 8
+  threads: 6
   extra_params: "--detect_adapter_for_pe"
 
-# /mnt/data/references/GRCh38/GENCODE/v48/STAR_ercc_gfp_idx (hg38 with ERCC + GFP)
-# /mnt/data/references/GRCm38/GENCODE/M25/STAR_ercc_gfp_idx (mm10 with ERCC + GFP)
-# /mnt/data/references/GRCm39/GENCODE/M38/STAR_ercc_gfp_idx (mm39 with ERCC + GFP)
-# (swap STAR_ercc_gfp_idx for STAR_idx to use the primary assembly without spike-ins)
 star:
-  threads: 12
-  index_dir: "/mnt/data/references/GRCh38/GENCODE/v48/STAR_ercc_gfp_idx" # (hg38 with ERCC + GFP)
+  threads: 8
+  index_dir: "/mnt/data/references/GRCh38/GENCODE/v48/STAR_idx"
   readFilesCommand: "zcat"
   twopassMode: "Basic" 
   outFilterMultimapNmax: 100 
@@ -28,29 +24,21 @@ star:
   outSAMtype: "BAM SortedByCoordinate"
   outSAMattributes: "Standard"
 
-
-# /mnt/data/references/GRCh38/GENCODE/v48/salmon_ercc_gfp_idx (hg38 with ERCC + GFP, no TEs)
-# /mnt/data/references/GRCm38/GENCODE/M25/salmon_ercc_gfp_idx (mm10 with ERCC + GFP, no TEs)
-# /mnt/data/references/GRCm39/GENCODE/M38/salmon_ercc_gfp_idx (mm39 with ERCC + GFP, no TEs)
-# (swap salmon_ercc_gfp_idx for salmon_idx to use the primary assembly without spike-ins)
-# TE-aware indices are not built by generate-resources:
-# /home/gennaro/data/references/GRCh38/rmskProfiler/hg38-resources_v48/rmsk-salmon_index (hg38 + TEs)
-# /home/gennaro/data/references/GRCm38/rmskProfiler/mm10-resources/rmsk-salmon_index (mm10 + TEs)
 salmon:
-  threads: 8
-  index_dir: "/mnt/data/references/GRCh38/GENCODE/v48/salmon_ercc_gfp_idx" # (hg38 with ERCC + GFP, no TEs)
+  threads: 12
+  index_dir: "/mnt/data/references/GRCh38/rmskProfiler/hg38-resources_v48/rmsk-salmon_index"
   lib_type: "A"
   gibbs: 100
   extra_params: "--gcBias --seqBias --posBias"
 
 rustqc:
-  threads: 4
+  threads: 6
   gtf: "/mnt/data/references/GRCh38/GENCODE/v48/gencode.v48.basic.annotation.gtf.gz"
   biotype: "gene_type"
   stranded: "reverse"
 
 mosdepth:
-  threads: 4
+  threads: 6
   window_size: 500
   extra_params: "--fast-mode"
   include_flag: 3
