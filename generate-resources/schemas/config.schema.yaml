@@ -129,7 +129,7 @@ properties:
   spike_ins:
     type: object
     additionalProperties: false
-    required: [ercc_url, gfp_url, lambda_url]
+    required: [ercc_url, gfp_url, lambda_url, ecoli_url]
     properties:
       ercc_url:
         type: string
@@ -138,6 +138,9 @@ properties:
         type: string
         minLength: 1
       lambda_url:
+        type: string
+        minLength: 1
+      ecoli_url:
         type: string
         minLength: 1
 

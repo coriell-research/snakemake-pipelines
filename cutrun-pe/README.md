@@ -44,4 +44,21 @@ Output goes to `../data` by default (`work_dir` in config.yaml).
 6. QC: fragment size distributions (all samples), TSS profile, `plotFingerprint` target vs IgG,
    FRiP and peak counts (MultiQC general stats), fastp and markdup stats in MultiQC
 
+### Optional: E. coli spike-in scaling
+
+CUT&RUN carries over *E. coli* DNA from the pAG-MNase prep, which can be used to scale signal
+between samples. When the `spikein` block in config.yaml is enabled, each sample's trimmed reads
+are also aligned (end-to-end, `--no-overlap --no-dovetail -I 10 -X 700`) to an E. coli-only
+bowtie2 index and the proper-pair fragments (MAPQ >= `spikein.min_mapq`) are counted
+**without deduplication**. The scale factor is `scale_constant / E. coli fragments`. Outputs:
+
+- `spikein/{sample}.spikein_mqc.tsv`: E. coli fragments, E. coli %, scale factor (MultiQC general stats; all samples)
+- `bg2bw_spikenorm/{sample}.bw`: scaled signal tracks for targets (raw tracks in `bg2bw/` are kept;
+  peak calling is unaffected)
+
+Build the index with the `bowtie2_ecoli_index` rule in `generate-resources`. To run **without**
+a spike-in (no E. coli index, or libraries with no carry-over), remove the `spikein` block or set
+`spikein: enabled: false`; all spike-in rules and outputs are then skipped. If `enabled` but a sample
+has no E. coli fragments, its scaled bigWig fails with an explanatory message.
+
 IgG samples are processed through alignment and filtering and used only as controls.

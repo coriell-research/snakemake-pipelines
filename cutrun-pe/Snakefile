@@ -53,6 +53,16 @@ for s in SAMPLES_LIST:
 LANE_R1 = LANES.groupby("sample_name")["read1"].apply(list).to_dict()
 LANE_R2 = LANES.groupby("sample_name")["read2"].apply(list).to_dict()
 
+# Spike-in (E. coli carry-over) scaling is optional: it is active only when a `spikein`
+# block with an `idx` is present in config.yaml and `enabled` is not false.
+SPIKEIN = config.get("spikein") or {}
+SPIKEIN_ENABLED = bool(SPIKEIN.get("idx")) and SPIKEIN.get("enabled", True)
+if SPIKEIN_ENABLED and not os.path.isfile(f"{SPIKEIN['idx']}.1.bt2"):
+    raise WorkflowError(
+        f"spikein.idx '{SPIKEIN['idx']}' is not a bowtie2 index (no .1.bt2 file). Build it with "
+        "generate-resources (rule bowtie2_ecoli_index) or set `spikein: enabled: false` in config.yaml"
+    )
+
 WORK_DIR = config.get("work_dir", "../data")
 MERGED_OUT = f"{WORK_DIR}/merged"
 FASTP_OUT = f"{WORK_DIR}/fastp"
@@ -61,7 +71,17 @@ GENRICH_OUT = f"{WORK_DIR}/genrich"
 BIGWIG_OUT = f"{WORK_DIR}/bg2bw"
 DEEPTOOLS_OUT = f"{WORK_DIR}/deeptools"
 FILTER_OUT = f"{WORK_DIR}/filtered"
+SPIKEIN_OUT = f"{WORK_DIR}/spikein"
+SPIKENORM_OUT = f"{WORK_DIR}/bg2bw_spikenorm"
 MULTIQC_OUT = f"{WORK_DIR}/multiqc"
+
+
+SPIKEIN_TARGETS = (
+    expand(f"{SPIKEIN_OUT}/{{sample}}.spikein_mqc.tsv", sample=SAMPLES_LIST)
+    + expand(f"{SPIKENORM_OUT}/{{sample}}.bw", sample=TARGETS)
+    if SPIKEIN_ENABLED
+    else []
+)
 
 
 def control_bam(wildcards):
@@ -86,7 +106,8 @@ rule all:
         expand(f"{DEEPTOOLS_OUT}/{{sample}}.fingerprint.pdf", sample=TARGETS),
         expand(f"{DEEPTOOLS_OUT}/{{sample}}.fragSizes.pdf", sample=SAMPLES_LIST),
         expand(f"{DEEPTOOLS_OUT}/{{sample}}.fragSizes.txt", sample=SAMPLES_LIST),
-        expand(f"{GENRICH_OUT}/{{sample}}.frip_mqc.tsv", sample=TARGETS)
+        expand(f"{GENRICH_OUT}/{{sample}}.frip_mqc.tsv", sample=TARGETS),
+        SPIKEIN_TARGETS
 
 
 rule merge_lanes:
@@ -400,13 +421,123 @@ rule fingerprint:
         """
 
 
+if SPIKEIN_ENABLED:
+
+    rule spikein_align:
+        # Align trimmed reads to E. coli only and count fragments (no deduplication).
+        input:
+            r1 = f"{FASTP_OUT}/{{sample}}.trimmed.1.fq.gz",
+            r2 = f"{FASTP_OUT}/{{sample}}.trimmed.2.fq.gz"
+        output:
+            counts = f"{SPIKEIN_OUT}/{{sample}}.spikein_fragments.txt"
+        log:
+            f"{SPIKEIN_OUT}/{{sample}}.spikein.log"
+        threads: 8
+        params:
+            idx = SPIKEIN["idx"],
+            min_mapq = SPIKEIN.get("min_mapq", 10)
+        conda:
+            "envs/bowtie2.yaml"
+        # -f 66: proper pair + read 1 (one count per fragment);
+        # -F 780: unmapped, mate unmapped, secondary, QC-fail. Duplicates are NOT removed.
+        shell:
+            """
+            bowtie2 -x {params.idx} \
+                -1 {input.r1} \
+                -2 {input.r2} \
+                --end-to-end --very-sensitive --no-mixed --no-discordant \
+                --no-overlap --no-dovetail -I 10 -X 700 \
+                --threads {threads} 2> {log} | \
+            samtools view -c -f 66 -F 780 -q {params.min_mapq} - > {output.counts}
+            """
+
+
+    rule spikein_scale:
+        input:
+            counts = f"{SPIKEIN_OUT}/{{sample}}.spikein_fragments.txt",
+            bam = f"{FILTER_OUT}/{{sample}}.filtered.bam",
+            idx = f"{FILTER_OUT}/{{sample}}.filtered.bam.csi"
+        output:
+            tsv = f"{SPIKEIN_OUT}/{{sample}}.spikein_mqc.tsv",
+            scale = f"{SPIKEIN_OUT}/{{sample}}.scale_factor.txt"
+        params:
+            constant = SPIKEIN.get("scale_constant", 10000)
+        log:
+            f"{SPIKEIN_OUT}/{{sample}}_spikein_scale.log"
+        threads: 2
+        conda:
+            "envs/samtools.yaml"
+        # scale factor = constant / E. coli fragments; 'nan' when no E. coli fragments were found
+        shell:
+            """
+            ecoli=$(cat {input.counts})
+            host=$(samtools view -c -f 64 -@ {threads} {input.bam})
+            if [ "$ecoli" -eq 0 ]; then
+                echo "WARNING: no E. coli fragments detected for {wildcards.sample}; no scale factor" > {log}
+            fi
+            awk -v e="$ecoli" -v c={params.constant} \
+                'BEGIN {{ print (e > 0 ? c / e : "nan") }}' > {output.scale}
+            {{
+            echo "# id: 'spikein'"
+            echo "# section_name: 'E. coli spike-in'"
+            echo "# plot_type: 'generalstats'"
+            echo "# pconfig:"
+            echo "#     ecoli_fragments:"
+            echo "#         title: 'E. coli frags'"
+            echo "#         format: '{{:,.0f}}'"
+            echo "#     ecoli_pct:"
+            echo "#         title: 'E. coli %'"
+            echo "#         format: '{{:.3f}}'"
+            echo "#     spikein_scale:"
+            echo "#         title: 'Spike scale'"
+            echo "#         format: '{{:.4f}}'"
+            echo -e "Sample\tecoli_fragments\tecoli_pct\tspikein_scale"
+            awk -v s={wildcards.sample} -v e="$ecoli" -v h="$host" -v c={params.constant} \
+                'BEGIN {{ printf "%s\t%d\t%.4f\t%s\n", s, e, (e + h > 0 ? 100 * e / (e + h) : 0), (e > 0 ? c / e : "nan") }}'
+            }} > {output.tsv}
+            """
+
+
+    rule scale_bedgraph:
+        input:
+            bedgraph = f"{BIGWIG_OUT}/{{sample}}.bedGraph",
+            scale = f"{SPIKEIN_OUT}/{{sample}}.scale_factor.txt"
+        output:
+            bedgraph = temp(f"{SPIKENORM_OUT}/{{sample}}.bedGraph")
+        conda:
+            "envs/gawk.yaml"
+        shell:
+            """
+            scale=$(cat {input.scale})
+            if [ "$scale" = "nan" ]; then
+                echo "No E. coli fragments for {wildcards.sample}: cannot spike-in scale. Set 'spikein: enabled: false' if no spike-in was used." >&2
+                exit 1
+            fi
+            awk -v s="$scale" '{{ printf "%s\t%s\t%s\t%.6g\n", $1, $2, $3, $4 * s }}' {input.bedgraph} > {output.bedgraph}
+            """
+
+
+    rule bg2bw_spikenorm:
+        input:
+            bedgraph = f"{SPIKENORM_OUT}/{{sample}}.bedGraph"
+        output:
+            bw = f"{SPIKENORM_OUT}/{{sample}}.bw"
+        params:
+            chrom_sizes = config["bedgraph2bigwig"]["chrom_sizes"]
+        conda:
+            "envs/bedgraphtobigwig.yaml"
+        shell:
+            "bedGraphToBigWig {input.bedgraph} {params.chrom_sizes} {output.bw}"
+
+
 rule multiqc:
     input:
         expand(f"{FASTP_OUT}/{{sample}}.fastp.json", sample=SAMPLES_LIST),
         expand(f"{BOWTIE2_OUT}/{{sample}}.stats.txt", sample=SAMPLES_LIST),
         expand(f"{GENRICH_OUT}/{{sample}}.narrowPeak", sample=TARGETS),
         expand(f"{GENRICH_OUT}/{{sample}}.frip_mqc.tsv", sample=TARGETS),
-        expand(f"{DEEPTOOLS_OUT}/{{sample}}.fragSizes.txt", sample=SAMPLES_LIST)
+        expand(f"{DEEPTOOLS_OUT}/{{sample}}.fragSizes.txt", sample=SAMPLES_LIST),
+        expand(f"{SPIKEIN_OUT}/{{sample}}.spikein_mqc.tsv", sample=SAMPLES_LIST) if SPIKEIN_ENABLED else []
     output:
         html_report = f"{MULTIQC_OUT}/multiqc_report.html",
         data_dir = directory(f"{MULTIQC_OUT}/multiqc_data")
@@ -418,4 +549,4 @@ rule multiqc:
     conda:
         "envs/multiqc.yaml"
     shell:
-        "multiqc {params.search_dir} -o {params.output_dir} -f &> {log}"
+        "multiqc {params.search_dir} -o {params.output_dir} --ignore '*.spikein.log' -f &> {log}"

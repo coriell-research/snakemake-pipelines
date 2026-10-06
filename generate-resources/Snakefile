@@ -141,6 +141,12 @@ ERCC_FA_GZ = register(f"{SPIKE_DIR}/{basename_of(SPIKE_INS['ercc_url'])}", SPIKE
 GFP_FA_GZ = register(f"{SPIKE_DIR}/{basename_of(SPIKE_INS['gfp_url'])}", SPIKE_INS["gfp_url"])
 LAMBDA_FA_GZ = register(f"{SPIKE_DIR}/{basename_of(SPIKE_INS['lambda_url'])}", SPIKE_INS["lambda_url"])
 
+# E. coli genome, used on its own (species-independent) as the CUT&RUN spike-in /
+# carry-over normalization reference. Not merged into the primary indices.
+ECOLI_FA_GZ = register(f"{SPIKE_DIR}/{basename_of(SPIKE_INS['ecoli_url'])}", SPIKE_INS["ecoli_url"])
+ECOLI_STEM = basename_of(SPIKE_INS["ecoli_url"]).removesuffix(".fna.gz").removesuffix(".fa.gz")
+BOWTIE2_ECOLI_PREFIX = f"{SPIKE_DIR}/bt2_ecoli_idx/{ECOLI_STEM}"
+
 
 def species_file(key):
     return lambda wildcards: SPECIES[wildcards.assembly][key]
@@ -178,6 +184,8 @@ rule all:
         expand_exts(BWAMETH_LAMBDA_REF_T, BWAMETH_EXTS),
         expand_exts(MINIBWA_ERCC_GFP_PREFIX_T, MINIBWA_EXTS),
         expand_species(CHROM_SIZES_ERCC_GFP_T),
+        # E. coli-only index (CUT&RUN spike-in normalization)
+        multiext(BOWTIE2_ECOLI_PREFIX, *BOWTIE2_EXTS),
         # Shared resources
         expand_species(EXCLUDERANGES_BED_T),
         EXTRA_TARGETS
@@ -331,6 +339,25 @@ rule bowtie2_ercc_gfp_index:
         index_jobs = 1
     log:
         f"{LOG_DIR}/bowtie2_ercc_gfp_index/{{assembly}}_{{release}}.log"
+    wrapper:
+        "v9.17.1/bio/bowtie2/build"
+
+
+rule bowtie2_ecoli_index:
+    # Standalone E. coli K-12 index (not species-specific), used by cutrun-pe to
+    # align reads separately for spike-in / carry-over scaling.
+    input:
+        ref = ECOLI_FA_GZ
+    output:
+        multiext(BOWTIE2_ECOLI_PREFIX, *BOWTIE2_EXTS)
+    params:
+        extra = ""
+    threads:
+        config.get("threads", {}).get("bowtie2", 32)
+    resources:
+        index_jobs = 1
+    log:
+        f"{LOG_DIR}/bowtie2_ecoli_index/ecoli.log"
     wrapper:
         "v9.17.1/bio/bowtie2/build"
 

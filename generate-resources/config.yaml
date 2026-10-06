@@ -46,6 +46,8 @@ spike_ins:
   ercc_url: "https://github.com/coriell-research/snakemake-pipelines/raw/refs/heads/main/generate-resources/data/ERCC92.fa.gz"
   gfp_url: "https://github.com/coriell-research/snakemake-pipelines/raw/refs/heads/main/generate-resources/data/pEGFP-N1.fa.gz"
   lambda_url: "https://github.com/coriell-research/snakemake-pipelines/raw/refs/heads/main/generate-resources/data/J02459.1_lambda.fa.gz"
+  # E. coli K-12 MG1655 (NCBI RefSeq GCF_000005845.2); standalone bowtie2 index for CUT&RUN spike-in scaling
+  ecoli_url: "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/005/845/GCF_000005845.2_ASM584v2/GCF_000005845.2_ASM584v2_genomic.fna.gz"
 
 threads:
   star: 32

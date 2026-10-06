@@ -69,6 +69,9 @@ GRCm39/M38, mouse GRCm38-mm10/M25):
    - bwa-meth index (`bwa-meth_lambda_idx/`) - genome + lambda phage
    - `minibwa` index (`minibwa_ercc_gfp_idx/`)
 
+   **E. coli index** (species-independent, for CUT&RUN spike-in scaling):
+   - Bowtie2 index of E. coli K-12 MG1655 (`spike_ins/bt2_ecoli_idx/`)
+
 3. Download the excludable/blacklist regions BED file (`excluderanges.bed.gz`, kept gzipped) directly from
    [bedbase.org](https://bedbase.org), via each species' `excluderanges.bed_url` in `config.yaml`.
 
