@@ -1,0 +1,421 @@
+import pandas as pd
+import os
+from snakemake.exceptions import WorkflowError
+from snakemake.utils import validate
+
+configfile: "config.yaml"
+validate(config, "schemas/config.schema.yaml")
+
+LANES = pd.read_csv("samples.csv", sep=",", header=0)
+if "control" in LANES.columns:
+    LANES["control"] = LANES["control"].fillna("")
+validate(LANES, "schemas/samples.schema.yaml")
+
+LANE_KEY_COLS = ["sample_name", "read1", "read2"]
+if LANES.duplicated(subset=LANE_KEY_COLS).any():
+    dupes = LANES.loc[LANES.duplicated(subset=LANE_KEY_COLS), LANE_KEY_COLS].to_dict("records")
+    raise WorkflowError(
+        f"Duplicate lane entries in samples.csv (identical sample_name/read1/read2): {dupes}"
+    )
+
+for _, row in LANES.iterrows():
+    for col in ("read1", "read2"):
+        if not os.path.isfile(row[col]):
+            raise WorkflowError(f"{col} for sample '{row['sample_name']}' not found: {row[col]}")
+
+SAMPLES_LIST = LANES["sample_name"].drop_duplicates().tolist()
+
+# type/control must be constant across all lanes of a sample
+for col in ("type", "control"):
+    varying = LANES.groupby("sample_name")[col].nunique()
+    varying = varying[varying > 1].index.tolist()
+    if varying:
+        raise WorkflowError(f"Column '{col}' differs across lanes for sample(s): {varying}")
+
+SAMPLE_TYPE = LANES.groupby("sample_name")["type"].first().to_dict()
+CONTROL_OF = LANES.groupby("sample_name")["control"].first().to_dict()
+TARGETS = [s for s in SAMPLES_LIST if SAMPLE_TYPE[s] == "target"]
+IGGS = [s for s in SAMPLES_LIST if SAMPLE_TYPE[s] == "igg"]
+
+if not TARGETS:
+    raise WorkflowError("samples.csv contains no samples with type 'target'")
+for s in SAMPLES_LIST:
+    if SAMPLE_TYPE[s] == "target":
+        ctrl = CONTROL_OF[s]
+        if not ctrl:
+            raise WorkflowError(f"Target sample '{s}' has no IgG control assigned")
+        if SAMPLE_TYPE.get(ctrl) != "igg":
+            raise WorkflowError(
+                f"Control '{ctrl}' for sample '{s}' is not a sample with type 'igg' in samples.csv"
+            )
+    elif CONTROL_OF[s]:
+        raise WorkflowError(f"IgG sample '{s}' must not have a control assigned")
+LANE_R1 = LANES.groupby("sample_name")["read1"].apply(list).to_dict()
+LANE_R2 = LANES.groupby("sample_name")["read2"].apply(list).to_dict()
+
+WORK_DIR = config.get("work_dir", "../data")
+MERGED_OUT = f"{WORK_DIR}/merged"
+FASTP_OUT = f"{WORK_DIR}/fastp"
+BOWTIE2_OUT = f"{WORK_DIR}/bowtie2"
+GENRICH_OUT = f"{WORK_DIR}/genrich"
+BIGWIG_OUT = f"{WORK_DIR}/bg2bw"
+DEEPTOOLS_OUT = f"{WORK_DIR}/deeptools"
+FILTER_OUT = f"{WORK_DIR}/filtered"
+MULTIQC_OUT = f"{WORK_DIR}/multiqc"
+
+
+def control_bam(wildcards):
+    return f"{GENRICH_OUT}/{CONTROL_OF[wildcards.sample]}.bam"
+
+
+def fastp_input(lane_paths, mate):
+    def _input(wildcards):
+        sample_lanes = lane_paths[wildcards.sample]
+        if len(sample_lanes) == 1:
+            return sample_lanes[0]
+        return f"{MERGED_OUT}/{wildcards.sample}.merged.{mate}.fq.gz"
+
+    return _input
+
+
+rule all:
+    input:
+        f"{MULTIQC_OUT}/multiqc_report.html",
+        expand(f"{BIGWIG_OUT}/{{sample}}.bw", sample=TARGETS),
+        expand(f"{DEEPTOOLS_OUT}/{{sample}}.profile.pdf", sample=TARGETS),
+        expand(f"{DEEPTOOLS_OUT}/{{sample}}.fingerprint.pdf", sample=TARGETS),
+        expand(f"{DEEPTOOLS_OUT}/{{sample}}.fragSizes.pdf", sample=SAMPLES_LIST),
+        expand(f"{DEEPTOOLS_OUT}/{{sample}}.fragSizes.txt", sample=SAMPLES_LIST),
+        expand(f"{GENRICH_OUT}/{{sample}}.frip_mqc.tsv", sample=TARGETS)
+
+
+rule merge_lanes:
+    input:
+        r1 = lambda w: LANE_R1[w.sample],
+        r2 = lambda w: LANE_R2[w.sample]
+    output:
+        r1_out = temp(f"{MERGED_OUT}/{{sample}}.merged.1.fq.gz"),
+        r2_out = temp(f"{MERGED_OUT}/{{sample}}.merged.2.fq.gz")
+    log:
+        f"{MERGED_OUT}/{{sample}}_merge_lanes.log"
+    shell:
+        """
+        cat {input.r1} > {output.r1_out} 2> {log}
+        cat {input.r2} > {output.r2_out} 2>> {log}
+        """
+
+
+rule fastp:
+    input:
+        r1 = fastp_input(LANE_R1, 1),
+        r2 = fastp_input(LANE_R2, 2)
+    output:
+        r1_out = temp(f"{FASTP_OUT}/{{sample}}.trimmed.1.fq.gz"),
+        r2_out = temp(f"{FASTP_OUT}/{{sample}}.trimmed.2.fq.gz"),
+        html = f"{FASTP_OUT}/{{sample}}.fastp.html",
+        json = f"{FASTP_OUT}/{{sample}}.fastp.json"
+    log:
+        f"{FASTP_OUT}/{{sample}}_fastp.log"
+    params:
+        extra = config.get("fastp", {}).get("extra_params", "")
+    threads: 8
+    conda:
+        "envs/fastp.yaml"
+    shell:
+        """
+        fastp -i {input.r1} \
+              -I {input.r2} \
+              -o {output.r1_out} \
+              -O {output.r2_out} \
+              --thread {threads} \
+              {params.extra} \
+              --html {output.html} \
+              --json {output.json} &> {log}
+        """
+
+
+rule bowtie2:
+    input:
+        r1 = f"{FASTP_OUT}/{{sample}}.trimmed.1.fq.gz",
+        r2 = f"{FASTP_OUT}/{{sample}}.trimmed.2.fq.gz"
+    output:
+        bam = f"{BOWTIE2_OUT}/{{sample}}.sorted.bam",
+        stats = f"{BOWTIE2_OUT}/{{sample}}.stats.txt",
+        idx = f"{BOWTIE2_OUT}/{{sample}}.sorted.bam.csi"
+    log:
+        f"{BOWTIE2_OUT}/{{sample}}.log"
+    threads: 8
+    params:
+        idx = config["bowtie2"]["idx"],
+        max_insert = config["bowtie2"]["max_insert"],
+        flags = config["bowtie2"]["flags"],
+        sort_mem = "4G",
+        comp_threads = 4
+    conda:
+        "envs/bowtie2.yaml"
+    shell:
+        """
+        bowtie2 -x {params.idx} \
+            -1 {input.r1} \
+            -2 {input.r2} \
+            {params.flags} \
+            --threads {threads} \
+            --maxins {params.max_insert} 2> {log} | \
+        samtools view -u -h -e 'rname != "chrM" && rname != "MT"' - | \
+        samtools collate -u -O -@ {params.comp_threads} - | \
+        samtools fixmate -m -u -@ {params.comp_threads} - - | \
+        samtools sort -u -@ {params.comp_threads} -m {params.sort_mem} - | \
+        samtools markdup --write-index -f {output.stats} -@ {threads} - {output.bam} 
+        """
+
+
+rule filter_bam:
+    input:
+        bam = f"{BOWTIE2_OUT}/{{sample}}.sorted.bam",
+        idx = f"{BOWTIE2_OUT}/{{sample}}.sorted.bam.csi"
+    output:
+        bam = f"{FILTER_OUT}/{{sample}}.filtered.bam",
+        idx = f"{FILTER_OUT}/{{sample}}.filtered.bam.csi"
+    params:
+        min_mapq = config["filter"]["min_mapq"],
+        max_frag = config["filter"].get("max_frag", 0)
+    threads: 4
+    conda:
+        "envs/samtools.yaml"
+    # -f 2: proper pairs; -F 1804: unmapped, mate unmapped, secondary, QC-fail, duplicate
+    # optional fragment size cap via TLEN (|isize| <= max_frag); 0 disables
+    shell:
+        """
+        if [ {params.max_frag} -gt 0 ]; then
+            samtools view -u -h -f 2 -F 1804 -q {params.min_mapq} -@ {threads} {input.bam} |             samtools view -u -h -e 'tlen >= -{params.max_frag} && tlen <= {params.max_frag}' -@ {threads} - |             samtools view -b --write-index -@ {threads} -o {output.bam}##idx##{output.idx} -
+        else
+            samtools view -b -h -f 2 -F 1804 -q {params.min_mapq} -@ {threads}                 --write-index -o {output.bam}##idx##{output.idx} {input.bam}
+        fi
+        """
+
+
+rule collate_bam:
+    input:
+        position_sorted = f"{FILTER_OUT}/{{sample}}.filtered.bam"
+    output:
+        name_sorted = f"{GENRICH_OUT}/{{sample}}.bam"
+    params:
+        reads = 100000
+    threads: 4
+    conda:
+        "envs/samtools.yaml"
+    shell:
+        "samtools collate -r {params.reads} -@ {threads} -o {output.name_sorted} {input.position_sorted}"
+
+
+rule genrich:
+    input:
+        bam = f"{GENRICH_OUT}/{{sample}}.bam",
+        control = control_bam
+    output:
+        peaks = f"{GENRICH_OUT}/{{sample}}.narrowPeak",
+        pileup = f"{GENRICH_OUT}/{{sample}}.pileup.txt",
+        log = f"{GENRICH_OUT}/{{sample}}.log"
+    params:
+         blacklist = config["genrich"]["blacklist"],
+         flags = config["genrich"]["flags"]
+    conda:
+        "envs/genrich.yaml"
+    shell:
+        """
+        Genrich \
+          -t {input.bam} \
+          -c {input.control} \
+          -o {output.peaks} \
+          -k {output.pileup} \
+          -f {output.log} \
+          -E {params.blacklist} \
+          {params.flags}
+        """
+
+
+rule frip:
+    input:
+        bam = f"{FILTER_OUT}/{{sample}}.filtered.bam",
+        idx = f"{FILTER_OUT}/{{sample}}.filtered.bam.csi",
+        peaks = f"{GENRICH_OUT}/{{sample}}.narrowPeak"
+    output:
+        tsv = f"{GENRICH_OUT}/{{sample}}.frip_mqc.tsv"
+    threads: 2
+    conda:
+        "envs/samtools.yaml"
+    # count fragments via read 1 of proper pairs (-f 64)
+    shell:
+        """
+        total=$(samtools view -c -f 64 -@ {threads} {input.bam})
+        inpeaks=$(samtools view -c -f 64 -L {input.peaks} -@ {threads} {input.bam})
+        npeaks=$(wc -l < {input.peaks})
+        {{
+        echo "# id: 'frip'"
+        echo "# section_name: 'FRiP (Genrich peaks)'"
+        echo "# plot_type: 'generalstats'"
+        echo "# pconfig:"
+        echo "#     frip:"
+        echo "#         title: 'FRiP'"
+        echo "#         max: 1"
+        echo "#         min: 0"
+        echo "#         format: '{{:.3f}}'"
+        echo "#     n_peaks:"
+        echo "#         title: 'Peaks'"
+        echo "#         format: '{{:,.0f}}'"
+        echo -e "Sample\tfrip\tn_peaks"
+        awk -v s={wildcards.sample} -v t="$total" -v i="$inpeaks" -v n="$npeaks" \
+            'BEGIN {{ printf "%s\t%.4f\t%d\n", s, (t > 0 ? i / t : 0), n }}'
+        }} > {output.tsv}
+        """
+
+
+rule pileup2bedgraph:
+    input:
+        pileup = f"{GENRICH_OUT}/{{sample}}.pileup.txt"
+    output:
+        bedgraph = temp(f"{BIGWIG_OUT}/{{sample}}.bedGraph")
+    conda:
+        "envs/gawk.yaml"
+    shell:
+        """
+        awk 'NR > 2 {{ print $1, $2, $3, $4 }}' {input.pileup} | \
+        LC_ALL=C sort -k1,1 -k2,2n > {output.bedgraph}
+        """
+
+
+rule bg2bw:
+    input:
+        bedgraph = f"{BIGWIG_OUT}/{{sample}}.bedGraph"
+    output:
+        bw = f"{BIGWIG_OUT}/{{sample}}.bw"
+    params:
+        chrom_sizes = config["bedgraph2bigwig"]["chrom_sizes"]
+    conda:
+        "envs/bedgraphtobigwig.yaml"
+    shell:
+        "bedGraphToBigWig {input.bedgraph} {params.chrom_sizes} {output.bw}"
+
+
+rule compute_matrix:
+    input:
+        bigwig = f"{BIGWIG_OUT}/{{sample}}.bw"
+    output:
+        mat = f"{DEEPTOOLS_OUT}/{{sample}}.tss.mat.gz"
+    params:
+        upstream = 3000,
+        downstream = 3000,
+        blacklist = config["deeptools"]["blacklist"],
+        gtf = config["deeptools"]["gtf"]
+    threads:
+        6
+    conda:
+        "envs/deeptools.yaml"
+    shell:
+        """
+        computeMatrix reference-point \
+            --regionsFileName {params.gtf} \
+            --scoreFileName {input.bigwig} \
+            --outFileName {output.mat} \
+            --referencePoint TSS \
+            --beforeRegionStartLength {params.upstream} \
+            --afterRegionStartLength {params.downstream} \
+            --blackListFileName {params.blacklist} \
+            --averageTypeBins 'median' \
+            --sortUsing 'median' \
+            --skipZeros \
+            --missingDataAsZero \
+            --numberOfProcessors {threads}
+        """
+
+
+rule plot_profile:
+    input:
+        mat = f"{DEEPTOOLS_OUT}/{{sample}}.tss.mat.gz"
+    output:
+        pdf = f"{DEEPTOOLS_OUT}/{{sample}}.profile.pdf"
+    conda:
+        "envs/deeptools.yaml"
+    shell:
+        """
+        plotProfile --matrixFile {input.mat} \
+            --outFileName {output.pdf} \
+            --plotTitle 'TSS enrichment' \
+            --plotFileFormat 'pdf'
+        """
+
+
+rule fragment_size:
+    input:
+        bam = f"{FILTER_OUT}/{{sample}}.filtered.bam",
+        idx = f"{FILTER_OUT}/{{sample}}.filtered.bam.csi"
+    output:
+        pdf = f"{DEEPTOOLS_OUT}/{{sample}}.fragSizes.pdf",
+        raw = f"{DEEPTOOLS_OUT}/{{sample}}.fragSizes.txt"
+    params:
+        max_len = config["bowtie2"]["max_insert"],
+        blacklist = config["deeptools"]["blacklist"]
+    threads:
+        6
+    conda:
+        "envs/deeptools.yaml"
+    shell:
+        """
+        bamPEFragmentSize --bamfiles {input.bam} \
+            --histogram {output.pdf} \
+            --plotFileFormat 'pdf' \
+            --outRawFragmentLengths {output.raw} \
+            --numberOfProcessors {threads} \
+            --maxFragmentLength {params.max_len} \
+            --blackListFileName {params.blacklist}
+        """
+
+
+rule fingerprint:
+    input:
+        bam = f"{FILTER_OUT}/{{sample}}.filtered.bam",
+        idx = f"{FILTER_OUT}/{{sample}}.filtered.bam.csi",
+        ctrl = lambda w: f"{FILTER_OUT}/{CONTROL_OF[w.sample]}.filtered.bam",
+        ctrl_idx = lambda w: f"{FILTER_OUT}/{CONTROL_OF[w.sample]}.filtered.bam.csi"
+    output:
+        pdf = f"{DEEPTOOLS_OUT}/{{sample}}.fingerprint.pdf",
+        metrics = f"{DEEPTOOLS_OUT}/{{sample}}.fingerprint.txt"
+    params:
+        blacklist = config["deeptools"]["blacklist"],
+        ctrl_label = lambda w: CONTROL_OF[w.sample]
+    threads:
+        6
+    conda:
+        "envs/deeptools.yaml"
+    shell:
+        """
+        plotFingerprint --bamfiles {input.bam} {input.ctrl} \
+            --labels {wildcards.sample} {params.ctrl_label} \
+            --extendReads \
+            --skipZeros \
+            --blackListFileName {params.blacklist} \
+            --numberOfProcessors {threads} \
+            --plotFile {output.pdf} \
+            --outQualityMetrics {output.metrics}
+        """
+
+
+rule multiqc:
+    input:
+        expand(f"{FASTP_OUT}/{{sample}}.fastp.json", sample=SAMPLES_LIST),
+        expand(f"{BOWTIE2_OUT}/{{sample}}.stats.txt", sample=SAMPLES_LIST),
+        expand(f"{GENRICH_OUT}/{{sample}}.narrowPeak", sample=TARGETS),
+        expand(f"{GENRICH_OUT}/{{sample}}.frip_mqc.tsv", sample=TARGETS),
+        expand(f"{DEEPTOOLS_OUT}/{{sample}}.fragSizes.txt", sample=SAMPLES_LIST)
+    output:
+        html_report = f"{MULTIQC_OUT}/multiqc_report.html",
+        data_dir = directory(f"{MULTIQC_OUT}/multiqc_data")
+    log:
+        f"{MULTIQC_OUT}/multiqc.log"
+    params:
+        search_dir = WORK_DIR,
+        output_dir = MULTIQC_OUT
+    conda:
+        "envs/multiqc.yaml"
+    shell:
+        "multiqc {params.search_dir} -o {params.output_dir} -f &> {log}"

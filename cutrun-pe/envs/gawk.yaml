@@ -1,0 +1,5 @@
+channels:
+  - conda-forge
+dependencies:
+  - gawk=5.2.1
+  - coreutils=9.4

@@ -1,0 +1,27 @@
+$schema: "https://json-schema.org/draft/2020-12/schema"
+description: Schema for a single row of cutrun-pe samples.csv
+type: object
+additionalProperties: false
+required:
+  - sample_name
+  - type
+  - control
+  - read1
+  - read2
+properties:
+  sample_name:
+    type: string
+    pattern: "^[A-Za-z0-9_.-]+$"
+  type:
+    type: string
+    enum: [target, igg]
+  control:
+    type: string
+    description: sample_name of the IgG control (required for targets, empty for IgG)
+    pattern: "^[A-Za-z0-9_.-]*$"
+  read1:
+    type: string
+    pattern: "\\.f(ast)?q\\.gz$"
+  read2:
+    type: string
+    pattern: "\\.f(ast)?q\\.gz$"

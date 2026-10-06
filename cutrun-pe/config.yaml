@@ -1,0 +1,27 @@
+work_dir: "../data"
+
+fastp:
+  extra_params: "--detect_adapter_for_pe"
+
+bowtie2:
+  idx: "/mnt/data/references/GRCh38/GENCODE/v48/bt2_ercc_gfp_idx/GRCh38.primary_assembly.genome" # (hg38 with ERCC + GFP)
+  max_insert: 2000
+  flags: "--very-sensitive --no-mixed --no-discordant --dovetail"
+
+genrich:
+    blacklist: "/mnt/data/references/GRCh38/GENCODE/v48/excluderanges.bed.gz"
+    # duplicates are removed upstream (filter_bam), so Genrich -r is not used; no -j (not ATAC mode); -S skips the queryname-sort check (input is collated, not sorted)
+    flags: "-e chrM -q 0.05 -S"
+
+filter:
+  min_mapq: 10
+  # optional: keep only fragments <= this length (e.g. 120 for TF CUT&RUN); 0 disables
+  max_frag: 0
+
+bedgraph2bigwig:
+    # must list the same contigs as the bowtie2 index above (incl. ERCC + GFP)
+    chrom_sizes: "/mnt/data/references/GRCh38/GENCODE/v48/GRCh38.primary_assembly.genome.fa.ercc_gfp.chrom_sizes"
+
+deeptools:
+  blacklist: "/mnt/data/references/GRCh38/GENCODE/v48/excluderanges.bed.gz"
+  gtf: "/mnt/data/references/GRCh38/GENCODE/v48/gencode.v48.basic.annotation.gtf.gz"
