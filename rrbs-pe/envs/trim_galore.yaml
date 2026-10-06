@@ -1,6 +1,7 @@
 channels:
-  - bioconda
   - conda-forge
+  - bioconda
+  - nodefaults
 dependencies:
   # pinned to the newest bioconda release (v2.x, the Rust-rewritten Trim Galore),
   # which bundles its own FastQC-compatible engine (--fastqc), so no separate

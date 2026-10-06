@@ -1,3 +1,5 @@
+work_dir: "../data"
+
 fastp:
   extra_params: "--detect_adapter_for_pe"
 

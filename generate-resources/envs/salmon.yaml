@@ -1,6 +1,7 @@
 channels:
-  - bioconda
   - conda-forge
+  - bioconda
+  - nodefaults
 dependencies:
   # must match rnaseq-pe/envs/salmon.yaml exactly - the index this rule builds
   # is read directly by rnaseq-pe's salmon quant step, and index compatibility

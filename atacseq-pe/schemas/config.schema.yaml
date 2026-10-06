@@ -9,6 +9,9 @@ required:
   - deeptools
   - featurecounts
 properties:
+  work_dir:
+    type: string
+
   fastp:
     type: object
     additionalProperties: false

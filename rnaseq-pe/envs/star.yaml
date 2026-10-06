@@ -1,6 +1,7 @@
 channels:
-  - bioconda
   - conda-forge
+  - bioconda
+  - nodefaults
 dependencies:
   # must match the STAR version used to build the genome index in config.yaml
   - star=2.7.11b

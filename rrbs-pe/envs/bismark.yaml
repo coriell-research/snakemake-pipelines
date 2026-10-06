@@ -1,6 +1,7 @@
 channels:
-  - bioconda
   - conda-forge
+  - bioconda
+  - nodefaults
 dependencies:
   # must match the Bismark version used to build the genome index in config.yaml
   # (Bisulfite_Genome indices are tied to a Bismark/bowtie2 major version). Pinned

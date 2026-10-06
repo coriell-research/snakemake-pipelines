@@ -7,7 +7,7 @@ from snakemake.utils import validate
 
 configfile: "config.yaml"
 
-WORK_DIR = "results"
+WORK_DIR = config.get("work_dir", "results")
 FASTP_OUT = f"{WORK_DIR}/fastp"
 BWA_OUT = f"{WORK_DIR}/bwa"
 MERGE_OUT = f"{WORK_DIR}/merge"

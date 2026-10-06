@@ -85,7 +85,7 @@ rule fastp:
     params:
         extra = config["fastp"]["extra_params"]
     threads:
-        config.get("threads", {}).get("fastp", 8)
+        config.get("fastp", {}).get("threads", 8)
     conda:
         "envs/fastp.yaml"
     shell:
@@ -113,7 +113,7 @@ rule star:
     log:
         f"{LOG_DIR}/star/{{sample}}.log"
     threads: 
-        config.get("threads", {}).get("star", 12)
+        config.get("star", {}).get("threads", 12)
     params:
         star_index = config["star"]["index_dir"],
         out_prefix = f"{STAR_OUT}/{{sample}}.",
@@ -181,7 +181,7 @@ rule salmon:
         gibbs = config["salmon"]["gibbs"],
         output_dir = f"{SALMON_OUT}/{{sample}}"
     threads:
-        config.get("threads", {}).get("salmon", 8)
+        config.get("salmon", {}).get("threads", 8)
     conda:
         "envs/salmon.yaml"
     shell:
@@ -213,7 +213,7 @@ rule mosdepth:
     log:
         f"{LOG_DIR}/mosdepth/{{sample}}.log"
     threads:
-        config.get("threads", {}).get("mosdepth", 4)
+        config.get("mosdepth", {}).get("threads", 4)
     conda:
         "envs/mosdepth.yaml"
     shell:
@@ -242,7 +242,7 @@ rule rustqc:
     log:
         f"{LOG_DIR}/rustqc/{{sample}}.log"
     threads:
-        config.get("threads", {}).get("rustqc", 4)
+        config.get("rustqc", {}).get("threads", 4)
     conda:
         "envs/rustqc.yaml"
     shell:

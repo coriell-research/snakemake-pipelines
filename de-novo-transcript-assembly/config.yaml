@@ -1,3 +1,5 @@
+work_dir: "../data"
+
 fastp:
   threads: 12
   extra_params: "--detect_adapter_for_pe"

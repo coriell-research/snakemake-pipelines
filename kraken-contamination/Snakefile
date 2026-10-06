@@ -13,10 +13,12 @@
 import pandas as pd
 
 
+configfile: "config.yaml"
+
 SAMPLES = pd.read_csv("samples.csv", sep=",", header=0)
 SAMPLES_LIST = SAMPLES["sample_name"].tolist()
 
-WORK_DIR = "../data"
+WORK_DIR = config.get("work_dir", "../data")
 KRAKEN_OUT = f"{WORK_DIR}/01_kraken"
 BRACKEN_OUT = f"{WORK_DIR}/02_bracken"
 

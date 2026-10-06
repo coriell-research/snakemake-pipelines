@@ -12,26 +12,6 @@ properties:
   work_dir:
     type: string
 
-  threads:
-    type: object
-    additionalProperties: false
-    properties:
-      fastp:
-        type: integer
-        minimum: 1
-      star:
-        type: integer
-        minimum: 1
-      salmon:
-        type: integer
-        minimum: 1
-      mosdepth:
-        type: integer
-        minimum: 1
-      rustqc:
-        type: integer
-        minimum: 1
-
   fastp:
     type: object
     additionalProperties: false
