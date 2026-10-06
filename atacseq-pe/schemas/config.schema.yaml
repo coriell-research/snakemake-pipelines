@@ -4,6 +4,7 @@ type: object
 additionalProperties: false
 required:
   - bowtie2
+  - filter
   - genrich
   - bedgraph2bigwig
   - deeptools
@@ -32,6 +33,15 @@ properties:
         minimum: 1
       flags:
         type: string
+
+  filter:
+    type: object
+    additionalProperties: false
+    required: [min_mapq]
+    properties:
+      min_mapq:
+        type: integer
+        minimum: 0
 
   genrich:
     type: object

@@ -32,6 +32,7 @@ BOWTIE2_OUT = f"{WORK_DIR}/bowtie2"
 GENRICH_OUT = f"{WORK_DIR}/genrich"
 BIGWIG_OUT = f"{WORK_DIR}/bg2bw"
 DEEPTOOLS_OUT = f"{WORK_DIR}/deeptools"
+FILTER_OUT = f"{WORK_DIR}/filtered"
 FEATURECOUNTS_OUT = f"{WORK_DIR}/featurecounts"
 MULTIQC_OUT = f"{WORK_DIR}/multiqc"
 
@@ -108,7 +109,8 @@ rule bowtie2:
     output:
         bam = f"{BOWTIE2_OUT}/{{sample}}.sorted.bam",
         stats = f"{BOWTIE2_OUT}/{{sample}}.stats.txt",
-        idx = f"{BOWTIE2_OUT}/{{sample}}.sorted.bam.csi"
+        idx = f"{BOWTIE2_OUT}/{{sample}}.sorted.bam.csi",
+        chrm = f"{BOWTIE2_OUT}/{{sample}}.chrM_mqc.tsv"
     log:
         f"{BOWTIE2_OUT}/{{sample}}.log"
     threads: 8
@@ -128,17 +130,57 @@ rule bowtie2:
             {params.flags} \
             --threads {threads} \
             --maxins {params.max_insert} 2> {log} | \
-        samtools view -u -h -e 'rname != "chrM" && rname != "MT"' - | \
+        samtools view -u -h -e 'rname != "chrM" && rname != "MT"' -U {output.chrm}.bam - | \
         samtools collate -u -O -@ {params.comp_threads} - | \
         samtools fixmate -m -u -@ {params.comp_threads} - - | \
         samtools sort -u -@ {params.comp_threads} -m {params.sort_mem} - | \
-        samtools markdup --write-index -f {output.stats} -@ {threads} - {output.bam} 
+        samtools markdup --write-index -f {output.stats} -@ {threads} - {output.bam}
+
+        # chrM reads are discarded above; record their fraction of all mapped reads for QC
+        chrm=$(samtools view -c -F 4 {output.chrm}.bam)
+        kept=$(samtools view -c -F 4 -@ {threads} {output.bam})
+        rm {output.chrm}.bam
+        {{
+        echo "# id: 'chrm'"
+        echo "# section_name: 'chrM content'"
+        echo "# plot_type: 'generalstats'"
+        echo "# pconfig:"
+        echo "#     chrM_fraction:"
+        echo "#         title: 'chrM frac'"
+        echo "#         max: 1"
+        echo "#         min: 0"
+        echo "#         format: '{{:.3f}}'"
+        echo -e "Sample\tchrM_fraction"
+        awk -v s={wildcards.sample} -v c="$chrm" -v k="$kept" \
+            'BEGIN {{ printf "%s\t%.4f\n", s, (c + k > 0 ? c / (c + k) : 0) }}'
+        }} > {output.chrm}
+        """
+
+
+rule filter_bam:
+    input:
+        bam = f"{BOWTIE2_OUT}/{{sample}}.sorted.bam",
+        idx = f"{BOWTIE2_OUT}/{{sample}}.sorted.bam.csi"
+    output:
+        bam = f"{FILTER_OUT}/{{sample}}.filtered.bam",
+        idx = f"{FILTER_OUT}/{{sample}}.filtered.bam.csi"
+    params:
+        min_mapq = config["filter"]["min_mapq"]
+    threads: 4
+    conda:
+        "envs/samtools.yaml"
+    # -f 2: proper pairs; -F 780: unmapped, mate unmapped, secondary, QC-fail.
+    # Duplicates are kept (flagged only); Genrich -r removes them at peak calling.
+    shell:
+        """
+        samtools view -b -h -f 2 -F 780 -q {params.min_mapq} -@ {threads} \
+            --write-index -o {output.bam}##idx##{output.idx} {input.bam}
         """
 
 
 rule collate_bam:
     input:
-        position_sorted = f"{BOWTIE2_OUT}/{{sample}}.sorted.bam"
+        position_sorted = f"{FILTER_OUT}/{{sample}}.filtered.bam"
     output:
         name_sorted = temp(f"{GENRICH_OUT}/{{sample}}.bam")
     params:
@@ -252,8 +294,8 @@ rule plot_profile:
 
 rule fragment_size:
     input:
-        bam = f"{BOWTIE2_OUT}/{{sample}}.sorted.bam",
-        idx = f"{BOWTIE2_OUT}/{{sample}}.sorted.bam.csi"
+        bam = f"{FILTER_OUT}/{{sample}}.filtered.bam",
+        idx = f"{FILTER_OUT}/{{sample}}.filtered.bam.csi"
     output:
         pdf = f"{DEEPTOOLS_OUT}/{{sample}}.fragSizes.pdf",
         raw = f"{DEEPTOOLS_OUT}/{{sample}}.fragSizes.txt"
@@ -278,7 +320,7 @@ rule fragment_size:
 
 rule featurecounts:
     input:
-        bam = f"{BOWTIE2_OUT}/{{sample}}.sorted.bam"
+        bam = f"{FILTER_OUT}/{{sample}}.filtered.bam"
     output:
         counts = f"{FEATURECOUNTS_OUT}/{{sample}}.featurecounts.txt",
         summary = f"{FEATURECOUNTS_OUT}/{{sample}}.featurecounts.txt.summary"
@@ -315,6 +357,7 @@ rule multiqc:
     input:
         expand(f"{FASTP_OUT}/{{sample}}.fastp.json", sample=SAMPLES_LIST),
         expand(f"{BOWTIE2_OUT}/{{sample}}.stats.txt", sample=SAMPLES_LIST),
+        expand(f"{BOWTIE2_OUT}/{{sample}}.chrM_mqc.tsv", sample=SAMPLES_LIST),
         expand(f"{GENRICH_OUT}/{{sample}}.narrowPeak", sample=SAMPLES_LIST),
         expand(f"{FEATURECOUNTS_OUT}/{{sample}}.featurecounts.txt.summary", sample=SAMPLES_LIST)
     output:

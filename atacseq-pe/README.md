@@ -32,5 +32,6 @@ changed via `work_dir` in config.yaml).
 
 1. `fastp` using paired-end adapter detection
 2. `Bowtie2` alignment with bowtie2 -> fixmate -> markdup -> position sorted BAMs
-3. `Genrich` peak calling in ATAC-seq mode
-4. `bedGraphToBigWig` to create raw signal files from Genrich bedGraph-ish output
+3. `filter_bam`: keeps proper pairs, drops unmapped/secondary/QC-fail reads and MAPQ < `filter.min_mapq` (default 10); duplicates stay flagged in the BAM
+4. `Genrich` peak calling in ATAC-seq mode (`-r` removes PCR duplicates)
+5. `bedGraphToBigWig` to create raw signal files from Genrich bedGraph-ish output

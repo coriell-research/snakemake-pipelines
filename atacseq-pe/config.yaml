@@ -8,6 +8,9 @@ bowtie2:
   max_insert: 2000
   flags: "--very-sensitive --no-mixed --no-discordant"
 
+filter:
+  min_mapq: 10
+
 genrich:
     blacklist: "/mnt/data/references/GRCh38/GENCODE/v48/excluderanges.bed.gz"
     flags: "-r -e chrM -S"
