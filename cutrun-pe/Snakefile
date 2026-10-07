@@ -286,7 +286,7 @@ rule frip:
         echo "#         format: '{{:,.0f}}'"
         echo -e "Sample\tfrip\tn_peaks"
         awk -v s={wildcards.sample} -v t="$total" -v i="$inpeaks" -v n="$npeaks" \
-            'BEGIN {{ printf "%s\t%.4f\t%d\n", s, (t > 0 ? i / t : 0), n }}'
+            'BEGIN {{ printf "%s\\t%.4f\\t%d\\n", s, (t > 0 ? i / t : 0), n }}'
         }} > {output.tsv}
         """
 
@@ -491,7 +491,7 @@ if SPIKEIN_ENABLED:
             echo "#         format: '{{:.4f}}'"
             echo -e "Sample\tecoli_fragments\tecoli_pct\tspikein_scale"
             awk -v s={wildcards.sample} -v e="$ecoli" -v h="$host" -v c={params.constant} \
-                'BEGIN {{ printf "%s\t%d\t%.4f\t%s\n", s, e, (e + h > 0 ? 100 * e / (e + h) : 0), (e > 0 ? c / e : "nan") }}'
+                'BEGIN {{ printf "%s\\t%d\\t%.4f\\t%s\\n", s, e, (e + h > 0 ? 100 * e / (e + h) : 0), (e > 0 ? c / e : "nan") }}'
             }} > {output.tsv}
             """
 
@@ -509,7 +509,7 @@ if SPIKEIN_ENABLED:
                 echo "No E. coli fragments for {wildcards.sample}: cannot spike-in scale. Set 'spikein: enabled: false' if no spike-in was used." >&2
                 exit 1
             fi
-            awk -v s="$scale" '{{ printf "%s\t%s\t%s\t%.6g\n", $1, $2, $3, $4 * s }}' {input.bedgraph} > {output.bedgraph}
+            awk -v s="$scale" '{{ printf "%s\\t%s\\t%s\\t%.6g\\n", $1, $2, $3, $4 * s }}' {input.bedgraph} > {output.bedgraph}
             """
 
 
