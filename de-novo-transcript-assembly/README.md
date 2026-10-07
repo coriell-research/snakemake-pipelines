@@ -19,9 +19,8 @@ named 'read1' and 'read2', respectively, and contain the full path to the
 raw fastq.gz files on your system. An example 'samples.csv' file is in this repo.
 3. Run the pipeline: `mamba activate snakemake && snakemake --use-conda --cores 32`
 
-By default, the pipeline outputs directories in a folder called ../data (i.e. 
-one level up from the current working directory - the default output location can be 
-changed by editing the Snakefile).
+By default, the pipeline outputs directories in a folder called `results` (inside the pipeline directory; the output location can be
+changed via `work_dir` in config.yaml).
 
 ### Overview
 

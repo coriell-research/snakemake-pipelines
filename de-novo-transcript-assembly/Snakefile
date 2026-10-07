@@ -6,7 +6,7 @@ configfile: "config.yaml"
 SAMPLES = pd.read_csv("samples.csv", sep=",", header=0)
 SAMPLES_LIST = SAMPLES["sample_name"].tolist()
 
-WORK_DIR = config.get("work_dir", "../data")
+WORK_DIR = config.get("work_dir", "results")
 FASTP_OUT = f"{WORK_DIR}/fastp"
 STAR_OUT = f"{WORK_DIR}/star"
 STRINGTIE_OUT = f"{WORK_DIR}/stringtie"

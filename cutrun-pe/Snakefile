@@ -63,7 +63,7 @@ if SPIKEIN_ENABLED and not os.path.isfile(f"{SPIKEIN['idx']}.1.bt2"):
         "generate-resources (rule bowtie2_ecoli_index) or set `spikein: enabled: false` in config.yaml"
     )
 
-WORK_DIR = config.get("work_dir", "../data")
+WORK_DIR = config.get("work_dir", "results")
 MERGED_OUT = f"{WORK_DIR}/merged"
 FASTP_OUT = f"{WORK_DIR}/fastp"
 BOWTIE2_OUT = f"{WORK_DIR}/bowtie2"

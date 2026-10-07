@@ -25,7 +25,7 @@ SAMPLES_LIST = LANES["sample_name"].drop_duplicates().tolist()
 LANE_R1 = LANES.groupby("sample_name")["read1"].apply(list).to_dict()
 LANE_R2 = LANES.groupby("sample_name")["read2"].apply(list).to_dict()
 
-WORK_DIR = config.get("work_dir", "../data")
+WORK_DIR = config.get("work_dir", "results")
 MERGED_OUT = f"{WORK_DIR}/merged"
 FASTP_OUT = f"{WORK_DIR}/fastp"
 BOWTIE2_OUT = f"{WORK_DIR}/bowtie2"

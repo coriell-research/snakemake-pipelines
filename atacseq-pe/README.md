@@ -24,8 +24,7 @@ read1/read2 files will be merged automatically before trimming.
 3. Ensure paths to genome indeces are correctly configured in config.yaml
 4. Run the pipeline: `mamba activate snakemake && snakemake --use-conda --cores <N>`
 
-By default, the pipeline outputs directories in a folder called ../data (i.e.
-one level up from the current working directory - the default output location can be
+By default, the pipeline outputs directories in a folder called `results` (inside the pipeline directory; the output location can be
 changed via `work_dir` in config.yaml).
 
 ### Overview

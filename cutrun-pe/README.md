@@ -30,7 +30,7 @@ when run with `--use-conda`.
 3. Check paths and filtering settings in config.yaml
 4. Run: `mamba activate snakemake && snakemake --use-conda --cores <N>`
 
-Output goes to `../data` by default (`work_dir` in config.yaml).
+Output goes to `results` by default (`work_dir` in config.yaml).
 
 ### Overview
 

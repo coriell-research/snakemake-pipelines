@@ -1,4 +1,4 @@
-work_dir: "../data"
+work_dir: "results"
 
 trim_galore:
   extra_params: ""

@@ -1,4 +1,4 @@
-work_dir: "../data"
+work_dir: "results"
 
 fastp:
   extra_params: "--detect_adapter_for_pe"
