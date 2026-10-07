@@ -26,26 +26,7 @@ properties:
   star:
     type: object
     additionalProperties: false
-    required:
-      - index_dir
-      - readFilesCommand
-      - twopassMode
-      - outFilterMultimapNmax
-      - winAnchorMultimapNmax
-      - alignSJoverhangMin
-      - alignSJDBoverhangMin
-      - outFilterMismatchNmax
-      - outFilterMismatchNoverLmax
-      - alignIntronMin
-      - alignIntronMax
-      - alignMatesGapMax
-      - outFilterScoreMinOverLread
-      - outFilterMatchNminOverLread
-      - limitSjdbInsertNsj
-      - outSAMstrandField
-      - quantMode
-      - outSAMtype
-      - outSAMattributes
+    required: [index_dir, extra_params]
     properties:
       threads:
         type: integer
@@ -53,57 +34,7 @@ properties:
       index_dir:
         type: string
         minLength: 1
-      readFilesCommand:
-        type: string
-      twopassMode:
-        type: string
-        enum: ["Basic", "None"]
-      outFilterMultimapNmax:
-        type: integer
-        minimum: 1
-      winAnchorMultimapNmax:
-        type: integer
-        minimum: 1
-      alignSJoverhangMin:
-        type: integer
-        minimum: 1
-      alignSJDBoverhangMin:
-        type: integer
-        minimum: 1
-      outFilterMismatchNmax:
-        type: integer
-        minimum: 0
-      outFilterMismatchNoverLmax:
-        type: number
-        minimum: 0
-        maximum: 1
-      alignIntronMin:
-        type: integer
-        minimum: 1
-      alignIntronMax:
-        type: integer
-        minimum: 0
-      alignMatesGapMax:
-        type: integer
-        minimum: 0
-      outFilterScoreMinOverLread:
-        type: number
-        minimum: 0
-        maximum: 1
-      outFilterMatchNminOverLread:
-        type: number
-        minimum: 0
-        maximum: 1
-      limitSjdbInsertNsj:
-        type: integer
-        minimum: 0
-      outSAMstrandField:
-        type: string
-      quantMode:
-        type: string
-      outSAMtype:
-        type: string
-      outSAMattributes:
+      extra_params:
         type: string
 
   salmon:

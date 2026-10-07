@@ -117,51 +117,29 @@ rule star:
     params:
         star_index = config["star"]["index_dir"],
         out_prefix = f"{STAR_OUT}/{{sample}}.",
-        read_cmd = config["star"]["readFilesCommand"],
-        two_pass = config["star"]["twopassMode"],
-        multi_mappers = config["star"]["outFilterMultimapNmax"],
-        multi_anchor = config["star"]["winAnchorMultimapNmax"],
-        sj_overhang_min = config["star"]["alignSJoverhangMin"],
-        sjdb_overhang_min = config["star"]["alignSJDBoverhangMin"],
-        mismatches = config["star"]["outFilterMismatchNmax"],
-        mismatch_ratio = config["star"]["outFilterMismatchNoverLmax"],
-        intron_min = config["star"]["alignIntronMin"],
-        intron_max = config["star"]["alignIntronMax"],
-        max_gap = config["star"]["alignMatesGapMax"],
-        min_score_ratio = config["star"]["outFilterScoreMinOverLread"],
-        min_match_ratio = config["star"]["outFilterMatchNminOverLread"],
-        n_junctions = config["star"]["limitSjdbInsertNsj"],
-        strand_field = config["star"]["outSAMstrandField"],
-        quant_mode = config["star"]["quantMode"],
-        out_type = config["star"]["outSAMtype"],
-        sam_attributes = config["star"]["outSAMattributes"]
+        extra = config["star"]["extra_params"]
     conda:
         "envs/star.yaml"
     shell:
         """
-        STAR --genomeDir {params.star_index} \
+        # conda STAR build may use CPU instructions this machine lacks (e.g. illegal instruction);
+        # fall back to the local binary if it cannot even print its version
+        STAR_BIN=STAR
+        if ! STAR --version &> /dev/null; then
+            echo "conda STAR failed to run, falling back to /usr/local/bin/STAR" > {log}
+            STAR_BIN=/usr/local/bin/STAR
+        fi
+
+        $STAR_BIN --genomeDir {params.star_index} \
           --readFilesIn {input.r1} {input.r2} \
+          --readFilesCommand zcat \
           --outFileNamePrefix {params.out_prefix} \
           --runThreadN {threads} \
-          --readFilesCommand {params.read_cmd} \
-          --twopassMode {params.two_pass} \
-          --outFilterMultimapNmax {params.multi_mappers} \
-          --winAnchorMultimapNmax {params.multi_anchor} \
-          --alignSJoverhangMin {params.sj_overhang_min} \
-          --alignSJDBoverhangMin {params.sjdb_overhang_min} \
-          --outFilterMismatchNmax {params.mismatches} \
-          --outFilterMismatchNoverLmax {params.mismatch_ratio} \
-          --alignIntronMin {params.intron_min} \
-          --alignIntronMax {params.intron_max} \
-          --alignMatesGapMax {params.max_gap} \
-          --outFilterScoreMinOverLread {params.min_score_ratio} \
-          --outFilterMatchNminOverLread {params.min_match_ratio} \
-          --limitSjdbInsertNsj {params.n_junctions} \
-          --outSAMstrandField {params.strand_field} \
-          --quantMode {params.quant_mode} \
-          --outSAMtype {params.out_type} \
-          --outSAMindex BAM \
-          --outSAMattributes {params.sam_attributes} &> {log}
+          --quantMode GeneCounts \
+          --outSAMtype BAM SortedByCoordinate \
+          {params.extra} &>> {log}
+        
+        samtools index {output.bam}
         """
 
 
@@ -193,7 +171,7 @@ rule salmon:
           --mates2 {input.r2} \
           --threads {threads} \
           --numGibbsSamples {params.gibbs} \
-          --output {params.output_dir} {params.extra} &> {log}
+          --output {params.output_dir} {params.extra} &>> {log}
         """
 
 

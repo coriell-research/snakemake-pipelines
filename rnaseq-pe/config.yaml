@@ -7,24 +7,23 @@ fastp:
 star:
   threads: 8
   index_dir: "/mnt/data/references/GRCh38/GENCODE/v48/STAR_idx"
-  readFilesCommand: "zcat"
-  twopassMode: "Basic" 
-  outFilterMultimapNmax: 100 
-  winAnchorMultimapNmax: 100
-  alignSJoverhangMin: 8
-  alignSJDBoverhangMin: 1
-  outFilterMismatchNmax: 999
-  outFilterMismatchNoverLmax: 0.1 
-  alignIntronMin: 20 
-  alignIntronMax: 1000000 
-  alignMatesGapMax: 1000000 
-  outFilterScoreMinOverLread: 0.33 
-  outFilterMatchNminOverLread: 0.33 
-  limitSjdbInsertNsj: 1200000 
-  outSAMstrandField: "intronMotif" 
-  quantMode: "GeneCounts" 
-  outSAMtype: "BAM SortedByCoordinate"
-  outSAMattributes: "Standard"
+  # quantMode, outSAMtype, readFilesCommand are fixed in the rule (outputs depend on them)
+  extra_params: >-
+    --twopassMode Basic
+    --outFilterMultimapNmax 100
+    --winAnchorMultimapNmax 100
+    --alignSJoverhangMin 8
+    --alignSJDBoverhangMin 1
+    --outFilterMismatchNmax 999
+    --outFilterMismatchNoverLmax 0.1
+    --alignIntronMin 20
+    --alignIntronMax 1000000
+    --alignMatesGapMax 1000000
+    --outFilterScoreMinOverLread 0.33
+    --outFilterMatchNminOverLread 0.33
+    --limitSjdbInsertNsj 1200000
+    --outSAMstrandField intronMotif
+    --outSAMattributes Standard
 
 salmon:
   threads: 12
