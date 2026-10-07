@@ -296,8 +296,6 @@ rule pileup2bedgraph:
         pileup = f"{GENRICH_OUT}/{{sample}}.pileup.txt"
     output:
         bedgraph = temp(f"{BIGWIG_OUT}/{{sample}}.bedGraph")
-    conda:
-        "envs/gawk.yaml"
     shell:
         """
         awk 'NR > 2 {{ print $1, $2, $3, $4 }}' {input.pileup} | \
@@ -504,8 +502,6 @@ if SPIKEIN_ENABLED:
             scale = f"{SPIKEIN_OUT}/{{sample}}.scale_factor.txt"
         output:
             bedgraph = temp(f"{SPIKENORM_OUT}/{{sample}}.bedGraph")
-        conda:
-            "envs/gawk.yaml"
         shell:
             """
             scale=$(cat {input.scale})
