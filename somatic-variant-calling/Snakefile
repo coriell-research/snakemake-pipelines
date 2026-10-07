@@ -704,9 +704,14 @@ rule consensus_calls_paired:
         """
         bcftools isec -c all -n+{params.min_callers} -Oz {input.mutect_vcf} {input.muse_vcf} {input.strelka_vcf} {input.deepsomatic_vcf} -p {params.prefix_dir}
 
-        awk 'BEGIN {{OFS="\t"}} {{print $1, $2}}' {params.prefix_dir}/sites.txt > {params.prefix_dir}/regions.txt
-
-        bcftools view -R {params.prefix_dir}/regions.txt -Oz -o {output.vcf} {input.mutect_vcf}
+        # With min_callers < 4 a site may be absent from Mutect2, so take records
+        # from every caller's isec output (each holds only sites passing the
+        # threshold), reduce to sites-only so headers are compatible, and dedupe.
+        for f in {params.prefix_dir}/000?.vcf.gz; do
+            bcftools view -G -Ou $f | bcftools annotate -x INFO,FORMAT -Oz -o ${{f%.vcf.gz}}.sites.vcf.gz
+            bcftools index -t ${{f%.vcf.gz}}.sites.vcf.gz
+        done
+        bcftools concat -a -D -Ou {params.prefix_dir}/000?.sites.vcf.gz | bcftools sort -Oz -o {output.vcf}
         bcftools index -t {output.vcf}
         """
 

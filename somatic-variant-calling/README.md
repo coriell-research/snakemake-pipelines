@@ -33,5 +33,5 @@ The input "samples.csv" file has the following required columns:
 ### Notes
 
 - All 4 variant callers can accept tumor-normal pair data. Only Mutect2 and DeepSomatic can be run with tumor-only samples
-- By default, consensus calls are determined for tumor-normal pairs if at least 3/4 callers made the call. For tumor-only, both callers need to form the consensus (2/2). These options can be changes in the config.
+- By default, consensus calls are determined for tumor-normal pairs if at least 2/4 callers made the call. For tumor-only, both callers need to form the consensus (2/2). These options can be changes in the config.
 
