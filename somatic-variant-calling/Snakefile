@@ -620,6 +620,8 @@ DEEPSOMATIC_BIND_PATHS = sorted({
     os.path.abspath(WORK_DIR),
     DEEPSOMATIC_SCRIPTS_DIR,
     os.path.dirname(os.path.abspath(config["cnvkit"]["baits"])),
+    # realpath so a symlinked resources/ directory is bound at its real location
+    os.path.dirname(os.path.realpath(config["ref"]["fasta"])),
     "/usr/lib/locale/",
 })
 
