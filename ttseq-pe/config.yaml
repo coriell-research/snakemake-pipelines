@@ -1,0 +1,68 @@
+work_dir: "results"
+
+# Library strandedness. TruSeq Stranded / dUTP libraries (Harvard NTC TT-seq) are "reverse"
+# (read 1 antisense, read 2 sense); use "forward" for ligation-based kits. Check the RustQC
+# strandedness in the MultiQC report. Unstranded libraries are not supported.
+strandedness: "reverse"
+
+# Combined host + Drosophila annotation built by generate-resources (rule combine_gtf_with_dm6).
+# Used for featureCounts and RustQC; must match the STAR index below.
+annotation_gtf: "/mnt/data/references/GRCh38/GENCODE/v48/gencode.v48.basic.annotation.with_dm6.gtf.gz"
+
+# Contig / gene_id prefix marking spike-in (Drosophila) sequences in the combined reference.
+# Fixed to "dm6_" by generate-resources.
+spike_prefix: "dm6_"
+
+fastp:
+  threads: 6
+  # add e.g. "--trim_front1 13 --trim_front2 13" for a fixed 5' clip (as in Pwmski/pipeline-tt-seq)
+  extra_params: "--detect_adapter_for_pe --length_required 25"
+
+star:
+  threads: 12
+  # Combined GRCh38 + dm6_ STAR index built by generate-resources (rule star_dm6_index)
+  index_dir: "/mnt/data/references/GRCh38/GENCODE/v48/STAR_dm6_idx"
+  # Harvard NTC TT-seq alignment settings (GEO GSM8306575). readFilesCommand, outSAMtype and
+  # outSAMunmapped are fixed in the rule (outputs depend on them).
+  extra_params: >-
+    --outFilterType BySJout
+    --outFilterMismatchNmax 4
+    --alignSJoverhangMin 8
+    --outSAMstrandField intronMotif
+    --outFilterIntronMotifs RemoveNoncanonicalUnannotated
+    --alignIntronMin 20
+    --alignIntronMax 1000000
+    --alignMatesGapMax 1000000
+    --outMultimapperOrder Random
+    --outSAMattributes NH HI AS nM
+
+samtools:
+  threads: 4
+
+featurecounts:
+  threads: 8
+
+filter:
+  # STAR uniquely mapped reads only (MAPQ 255). This also drops reads that map equally well to
+  # host and fly. Must stay 255: featureCounts never counts multimappers (NH > 1).
+  min_mapq: 255
+  # Duplicates are always marked (samtools markdup). true drops them from counts and bigWigs
+  # (Harvard NTC); false keeps them (Pwmski/pipeline-tt-seq).
+  remove_duplicates: true
+
+# Drosophila spike-in normalization. Remove this block or set enabled: false if the libraries
+# have no spike-in; only depth-normalized size factors and bigWigs are then produced.
+spikein:
+  enabled: true
+  # minimum number of spike-in genes with counts in every sample for DESeq2 median-of-ratios;
+  # with fewer, size factors fall back to total spike-in gene counts
+  min_genes: 50
+
+bigwig:
+  threads: 6
+  bin_size: 10
+  extra_params: ""
+
+rustqc:
+  threads: 6
+  biotype: "gene_type"

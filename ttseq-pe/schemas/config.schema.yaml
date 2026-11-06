@@ -1,0 +1,119 @@
+$schema: "https://json-schema.org/draft/2020-12/schema"
+description: Schema for ttseq-pe config.yaml
+type: object
+additionalProperties: false
+required:
+  - strandedness
+  - annotation_gtf
+  - spike_prefix
+  - fastp
+  - star
+  - filter
+  - bigwig
+  - rustqc
+properties:
+  work_dir:
+    type: string
+
+  strandedness:
+    type: string
+    enum: ["reverse", "forward"]
+
+  annotation_gtf:
+    type: string
+    minLength: 1
+
+  spike_prefix:
+    type: string
+    # used verbatim inside samtools regular expressions
+    pattern: "^[A-Za-z0-9_]+$"
+
+  fastp:
+    type: object
+    additionalProperties: false
+    required: [extra_params]
+    properties:
+      threads:
+        type: integer
+        minimum: 1
+      extra_params:
+        type: string
+
+  star:
+    type: object
+    additionalProperties: false
+    required: [index_dir, extra_params]
+    properties:
+      threads:
+        type: integer
+        minimum: 1
+      index_dir:
+        type: string
+        minLength: 1
+      extra_params:
+        type: string
+
+  samtools:
+    type: object
+    additionalProperties: false
+    properties:
+      threads:
+        type: integer
+        minimum: 1
+
+  featurecounts:
+    type: object
+    additionalProperties: false
+    properties:
+      threads:
+        type: integer
+        minimum: 1
+
+  filter:
+    type: object
+    additionalProperties: false
+    required: [min_mapq, remove_duplicates]
+    properties:
+      min_mapq:
+        type: integer
+        # STAR unique alignments; featureCounts never counts multimappers, so tracks and
+        # counts only agree at 255
+        minimum: 255
+        maximum: 255
+      remove_duplicates:
+        type: boolean
+
+  spikein:
+    type: object
+    additionalProperties: false
+    properties:
+      enabled:
+        type: boolean
+      min_genes:
+        type: integer
+        minimum: 1
+
+  bigwig:
+    type: object
+    additionalProperties: false
+    required: [bin_size, extra_params]
+    properties:
+      threads:
+        type: integer
+        minimum: 1
+      bin_size:
+        type: integer
+        minimum: 1
+      extra_params:
+        type: string
+
+  rustqc:
+    type: object
+    additionalProperties: false
+    required: [biotype]
+    properties:
+      threads:
+        type: integer
+        minimum: 1
+      biotype:
+        type: string

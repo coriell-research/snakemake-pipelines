@@ -1,0 +1,579 @@
+import json
+import os
+import re
+import numpy as np
+import pandas as pd
+from snakemake.exceptions import WorkflowError
+from snakemake.utils import validate
+
+configfile: "config.yaml"
+validate(config, "schemas/config.schema.yaml")
+
+
+# dtype=str/keep_default_na=False: keep names like "01", "1" or "NA" as the strings the schema expects
+LANES = pd.read_csv("samples.csv", sep=",", dtype=str, keep_default_na=False)
+validate(LANES, "schemas/samples.schema.yaml")
+
+LANE_KEY_COLS = ["sample_name", "read1", "read2"]
+if LANES.duplicated(subset=LANE_KEY_COLS).any():
+    dupes = LANES.loc[LANES.duplicated(subset=LANE_KEY_COLS), LANE_KEY_COLS].to_dict("records")
+    raise WorkflowError(
+        f"Duplicate lane entries in samples.csv (identical sample_name/read1/read2): {dupes}"
+    )
+
+for _, row in LANES.iterrows():
+    for col in ("read1", "read2"):
+        if not os.path.isfile(row[col]):
+            raise WorkflowError(f"{col} for sample '{row['sample_name']}' not found: {row[col]}")
+
+# one or more rows per sample_name are allowed (one row per lane); lanes are
+# merged per-sample by rule merge_lanes before any trimming/alignment happens.
+# samples with only one lane skip merge_lanes entirely (see fastp_input below).
+SAMPLES_LIST = LANES["sample_name"].drop_duplicates().tolist()
+LANE_R1 = LANES.groupby("sample_name")["read1"].apply(list).to_dict()
+LANE_R2 = LANES.groupby("sample_name")["read2"].apply(list).to_dict()
+
+# Combined host + Drosophila reference, built by generate-resources
+if not os.path.isfile(os.path.join(config["star"]["index_dir"], "SA")):
+    raise WorkflowError(
+        f"star.index_dir '{config['star']['index_dir']}' is not a STAR index. Build the combined "
+        "host + Drosophila index with generate-resources (rule star_dm6_index)"
+    )
+if not os.path.isfile(config["annotation_gtf"]):
+    raise WorkflowError(
+        f"annotation_gtf '{config['annotation_gtf']}' not found. Build it with generate-resources "
+        "(rule combine_gtf_with_dm6)"
+    )
+
+STRANDEDNESS = config["strandedness"]
+# featureCounts -s: 1 = stranded (read 1 sense), 2 = reversely stranded (read 2 sense)
+FC_STRAND = {"forward": 1, "reverse": 2}[STRANDEDNESS]
+# deepTools --filterRNAstrand assumes dUTP (reverse) libraries: "forward" keeps fragments
+# from genes on the + strand. For forward-stranded libraries the mapping is swapped.
+RNA_STRAND = {
+    "reverse": {"plus": "forward", "minus": "reverse"},
+    "forward": {"plus": "reverse", "minus": "forward"},
+}[STRANDEDNESS]
+
+SPIKE_PREFIX = config["spike_prefix"]
+MIN_MAPQ = config["filter"]["min_mapq"]
+REMOVE_DUPS = config["filter"]["remove_duplicates"]
+# -F 780: unmapped, mate unmapped, secondary, QC-fail; 1804 also excludes duplicates
+COUNT_EXCLUDE_FLAGS = 1804 if REMOVE_DUPS else 780
+
+# Spike-in normalization is optional: active when a `spikein` block is present in
+# config.yaml and `enabled` is not false.
+SPIKEIN = config.get("spikein") or {}
+SPIKEIN_ENABLED = bool(SPIKEIN) and SPIKEIN.get("enabled", True)
+NORMS = ["depth", "spikein"] if SPIKEIN_ENABLED else ["depth"]
+
+WORK_DIR = config.get("work_dir", "results")
+MERGED_OUT = f"{WORK_DIR}/merged"
+FASTP_OUT = f"{WORK_DIR}/fastp"
+STAR_OUT = f"{WORK_DIR}/star"
+BAM_OUT = f"{WORK_DIR}/bam"
+COUNTS_OUT = f"{WORK_DIR}/counts"
+SIZEFACTOR_OUT = f"{WORK_DIR}/size_factors"
+BIGWIG_OUT = f"{WORK_DIR}/bigwig"
+RUSTQC_OUT = f"{WORK_DIR}/rustqc"
+MULTIQC_OUT = f"{WORK_DIR}/multiqc"
+LOG_DIR = f"{WORK_DIR}/logs"
+
+LEVELS = ["gene", "exon"]
+STRANDS = ["plus", "minus"]
+
+wildcard_constraints:
+    sample = "|".join(re.escape(s) for s in SAMPLES_LIST),
+    level = "|".join(LEVELS),
+    norm = "|".join(["depth", "spikein"]),
+    strand = "|".join(STRANDS)
+
+
+def fastp_input(lane_paths, mate):
+    def _input(wildcards):
+        sample_lanes = lane_paths[wildcards.sample]
+        if len(sample_lanes) == 1:
+            return sample_lanes[0]
+        return f"{MERGED_OUT}/{wildcards.sample}.merged.{mate}.fq.gz"
+
+    return _input
+
+
+rule all:
+    input:
+        f"{MULTIQC_OUT}/multiqc_report.html",
+        f"{SIZEFACTOR_OUT}/size_factors.tsv",
+        expand(f"{COUNTS_OUT}/{{level}}.{{species}}.tsv", level=LEVELS, species=["human", "spikein"]),
+        expand(f"{BIGWIG_OUT}/{{sample}}.{{norm}}.{{strand}}.bw", sample=SAMPLES_LIST, norm=NORMS, strand=STRANDS)
+
+
+rule merge_lanes:
+    input:
+        r1 = lambda w: LANE_R1[w.sample],
+        r2 = lambda w: LANE_R2[w.sample]
+    output:
+        r1_out = temp(f"{MERGED_OUT}/{{sample}}.merged.1.fq.gz"),
+        r2_out = temp(f"{MERGED_OUT}/{{sample}}.merged.2.fq.gz")
+    log:
+        f"{LOG_DIR}/merge_lanes/{{sample}}.log"
+    shell:
+        """
+        cat {input.r1} > {output.r1_out} 2> {log}
+        cat {input.r2} > {output.r2_out} 2>> {log}
+        """
+
+
+rule fastp:
+    input:
+        r1 = fastp_input(LANE_R1, 1),
+        r2 = fastp_input(LANE_R2, 2)
+    output:
+        r1_out = temp(f"{FASTP_OUT}/{{sample}}.trimmed.1.fq.gz"),
+        r2_out = temp(f"{FASTP_OUT}/{{sample}}.trimmed.2.fq.gz"),
+        html = f"{FASTP_OUT}/{{sample}}.fastp.html",
+        json = f"{FASTP_OUT}/{{sample}}.fastp.json"
+    log:
+        f"{LOG_DIR}/fastp/{{sample}}.log"
+    params:
+        extra = config["fastp"]["extra_params"]
+    threads:
+        config.get("fastp", {}).get("threads", 8)
+    conda:
+        "envs/fastp.yaml"
+    shell:
+        """
+        fastp -i {input.r1} \
+              --report_title {wildcards.sample} \
+              -I {input.r2} \
+              -o {output.r1_out} \
+              -O {output.r2_out} \
+              --thread {threads} \
+              {params.extra} \
+              --html {output.html} \
+              --json {output.json} &> {log}
+        """
+
+
+rule star:
+    # Single alignment to the combined host + dm6_ index. Output is left unsorted:
+    # rule markdup name-collates it anyway.
+    priority: 50
+    input:
+        r1 = f"{FASTP_OUT}/{{sample}}.trimmed.1.fq.gz",
+        r2 = f"{FASTP_OUT}/{{sample}}.trimmed.2.fq.gz"
+    output:
+        bam = temp(f"{STAR_OUT}/{{sample}}.Aligned.out.bam"),
+        log_final = f"{STAR_OUT}/{{sample}}.Log.final.out"
+    log:
+        f"{LOG_DIR}/star/{{sample}}.log"
+    threads:
+        config.get("star", {}).get("threads", 12)
+    params:
+        star_index = config["star"]["index_dir"],
+        out_prefix = f"{STAR_OUT}/{{sample}}.",
+        extra = config["star"]["extra_params"]
+    conda:
+        "envs/star.yaml"
+    shell:
+        """
+        # conda STAR build may use CPU instructions this machine lacks (e.g. illegal instruction);
+        # fall back to the local binary if it cannot even print its version
+        STAR_BIN=STAR
+        if ! STAR --version &> /dev/null; then
+            echo "conda STAR failed to run, falling back to /usr/local/bin/STAR" > {log}
+            STAR_BIN=/usr/local/bin/STAR
+        fi
+
+        $STAR_BIN --genomeDir {params.star_index} \
+          --readFilesIn {input.r1} {input.r2} \
+          --readFilesCommand zcat \
+          --outFileNamePrefix {params.out_prefix} \
+          --runThreadN {threads} \
+          --outSAMtype BAM Unsorted \
+          --outSAMunmapped None \
+          {params.extra} &>> {log}
+        """
+
+
+rule markdup:
+    # Keep unique primary alignments only (MAPQ 255) BEFORE marking duplicates, so a
+    # multimapper's primary alignment can never be chosen as the "original" of a unique
+    # fragment that is then discarded. Duplicates are marked, not removed.
+    input:
+        bam = f"{STAR_OUT}/{{sample}}.Aligned.out.bam"
+    output:
+        bam = f"{BAM_OUT}/{{sample}}.markdup.bam",
+        csi = f"{BAM_OUT}/{{sample}}.markdup.bam.csi",
+        stats = f"{BAM_OUT}/{{sample}}.markdup.stats.txt"
+    log:
+        f"{LOG_DIR}/markdup/{{sample}}.log"
+    params:
+        min_mapq = MIN_MAPQ,
+        sort_mem = "4G"
+    threads:
+        config.get("samtools", {}).get("threads", 4)
+    conda:
+        "envs/samtools.yaml"
+    shell:
+        """
+        samtools view -u -F 256 -q {params.min_mapq} -@ {threads} {input.bam} 2> {log} | \
+        samtools collate -u -O -@ {threads} - 2>> {log} | \
+        samtools fixmate -m -u -@ {threads} - - 2>> {log} | \
+        samtools sort -u -@ {threads} -m {params.sort_mem} - 2>> {log} | \
+        samtools markdup --write-index -f {output.stats} -@ {threads} - {output.bam}##idx##{output.csi} 2>> {log}
+        """
+
+
+rule filter_human:
+    # Host-only BAM (no dm6_ contigs) for bigWigs and RustQC. Duplicates are kept in it
+    # (RustQC needs them marked, not removed); bamCoverage drops them when
+    # filter.remove_duplicates is true. Also counts host and spike-in fragments
+    # (read 1 of proper pairs), honouring filter.remove_duplicates.
+    input:
+        bam = f"{BAM_OUT}/{{sample}}.markdup.bam",
+        csi = f"{BAM_OUT}/{{sample}}.markdup.bam.csi"
+    output:
+        bam = temp(f"{BAM_OUT}/human/{{sample}}.bam"),
+        bai = temp(f"{BAM_OUT}/human/{{sample}}.bam.bai"),
+        fragments = f"{BAM_OUT}/{{sample}}.fragments.tsv"
+    log:
+        f"{LOG_DIR}/filter_human/{{sample}}.log"
+    params:
+        min_mapq = MIN_MAPQ,
+        prefix = SPIKE_PREFIX,
+        count_exclude = COUNT_EXCLUDE_FLAGS
+    threads:
+        config.get("samtools", {}).get("threads", 4)
+    conda:
+        "envs/samtools.yaml"
+    shell:
+        """
+        samtools view -b -f 2 -F 780 -q {params.min_mapq} -e '!(rname =~ "^{params.prefix}")' \
+            -@ {threads} -o {output.bam} {input.bam} 2> {log}
+        samtools index -@ {threads} {output.bam} 2>> {log}
+        host=$(samtools view -c -f 66 -F {params.count_exclude} -q {params.min_mapq} \
+            -e '!(rname =~ "^{params.prefix}")' -@ {threads} {input.bam} 2>> {log})
+        spike=$(samtools view -c -f 66 -F {params.count_exclude} -q {params.min_mapq} \
+            -e 'rname =~ "^{params.prefix}"' -@ {threads} {input.bam} 2>> {log})
+        printf "sample\\thost_fragments\\tspikein_fragments\\n%s\\t%s\\t%s\\n" \
+            {wildcards.sample} "$host" "$spike" > {output.fragments}
+        """
+
+
+rule featurecounts:
+    # One matrix per level for all samples, on the combined host + dm6_ annotation:
+    # "gene" = whole gene body (nascent signal, mostly intronic), "exon" = exons only.
+    input:
+        bams = expand(f"{BAM_OUT}/{{sample}}.markdup.bam", sample=SAMPLES_LIST),
+        csis = expand(f"{BAM_OUT}/{{sample}}.markdup.bam.csi", sample=SAMPLES_LIST)
+    output:
+        counts = f"{COUNTS_OUT}/{{level}}.featureCounts.txt",
+        summary = f"{COUNTS_OUT}/{{level}}.featureCounts.txt.summary"
+    log:
+        f"{LOG_DIR}/featurecounts/{{level}}.log"
+    params:
+        gtf = config["annotation_gtf"],
+        strand = FC_STRAND,
+        min_mapq = MIN_MAPQ,
+        # --ignoreDup drops the whole pair if either mate is flagged as a duplicate
+        dups = "--ignoreDup" if REMOVE_DUPS else ""
+    threads:
+        config.get("featurecounts", {}).get("threads", 8)
+    conda:
+        "envs/subread.yaml"
+    shell:
+        """
+        featureCounts \
+            -a {params.gtf} \
+            -o {output.counts} \
+            -F 'GTF' \
+            -t {wildcards.level} \
+            -g 'gene_id' \
+            --extraAttributes 'gene_type' \
+            -p \
+            --countReadPairs \
+            -B \
+            -C \
+            -s {params.strand} \
+            -Q {params.min_mapq} \
+            {params.dups} \
+            -T {threads} \
+            {input.bams} &> {log}
+        """
+
+
+def read_featurecounts(path):
+    """featureCounts matrix -> (annotation DataFrame, counts DataFrame with sample columns)."""
+    df = pd.read_csv(path, sep="\t", comment="#", index_col="Geneid")
+    bam_cols = {f"{BAM_OUT}/{s}.markdup.bam": s for s in SAMPLES_LIST}
+    counts = df[list(bam_cols)].rename(columns=bam_cols)
+    annotation = df.drop(columns=list(bam_cols))
+    return annotation, counts
+
+
+def median_of_ratios(counts):
+    """DESeq2 median-of-ratios size factors over rows with counts > 0 in every sample.
+    Returns (size factors, number of rows used)."""
+    usable = counts[(counts > 0).all(axis=1)].astype(float)
+    if usable.empty:
+        return None, 0
+    log_counts = np.log(usable)
+    log_ratios = log_counts.sub(log_counts.mean(axis=1), axis=0)
+    return np.exp(log_ratios.median(axis=0)), len(usable)
+
+
+def pca_mqc(counts, size_factors, n_top=500):
+    """PC1/PC2 of log2(size-factor normalized counts + 1) over the n_top most variable
+    genes, as a MultiQC custom-content scatter plot."""
+    section = {
+        "id": "ttseq_pca",
+        "section_name": "PCA",
+        "description": (
+            f"PCA of log2(depth-normalized host gene-body counts + 1), top {n_top} most "
+            "variable genes."
+        ),
+    }
+    if counts.shape[1] < 2:
+        section.update(plot_type="html", data="<p>PCA needs at least 2 samples.</p>")
+        return section
+    norm = np.log2(counts.div(size_factors, axis=1) + 1)
+    norm = norm[norm.var(axis=1) > 0]
+    top = norm.loc[norm.var(axis=1).sort_values(ascending=False).index[:n_top]]
+    centered = (top.T - top.T.mean(axis=0)).to_numpy()
+    u, s, _ = np.linalg.svd(centered, full_matrices=False)
+    pcs = u * s
+    if pcs.shape[1] < 2:
+        pcs = np.hstack([pcs, np.zeros((pcs.shape[0], 2 - pcs.shape[1]))])
+    var = s ** 2
+    pct = list(100 * var / var.sum()) + [0.0, 0.0] if var.sum() > 0 else [0.0, 0.0]
+    section.update(
+        plot_type="scatter",
+        pconfig={
+            "id": "ttseq_pca_plot",
+            "title": "TT-seq: PCA",
+            "xlab": f"PC1 ({pct[0]:.1f}%)",
+            "ylab": f"PC2 ({pct[1]:.1f}%)",
+        },
+        data={s: {"x": float(pcs[i, 0]), "y": float(pcs[i, 1])} for i, s in enumerate(top.columns)},
+    )
+    return section
+
+
+rule size_factors:
+    # Runs in the snakemake environment (pandas + numpy), not a conda env.
+    # sf_depth: DESeq2 median-of-ratios on host gene-body counts.
+    # sf_spikein: the same on spike-in gene-body counts (rRNA genes and the fly mitochondrial/
+    #   rDNA contigs excluded); with fewer than spikein.min_genes usable genes, falls back to
+    #   total spike-in gene counts / their geometric mean.
+    # Coverage is divided by the size factor (bigWig scaleFactor = 1 / sf), as in DESeq2.
+    input:
+        gene = f"{COUNTS_OUT}/gene.featureCounts.txt",
+        exon = f"{COUNTS_OUT}/exon.featureCounts.txt",
+        fragments = expand(f"{BAM_OUT}/{{sample}}.fragments.tsv", sample=SAMPLES_LIST)
+    output:
+        table = f"{SIZEFACTOR_OUT}/size_factors.tsv",
+        mqc = f"{SIZEFACTOR_OUT}/size_factors_mqc.tsv",
+        pca = f"{SIZEFACTOR_OUT}/pca_mqc.json",
+        gene_human = f"{COUNTS_OUT}/gene.human.tsv",
+        gene_spikein = f"{COUNTS_OUT}/gene.spikein.tsv",
+        exon_human = f"{COUNTS_OUT}/exon.human.tsv",
+        exon_spikein = f"{COUNTS_OUT}/exon.spikein.tsv"
+    log:
+        f"{LOG_DIR}/size_factors/size_factors.log"
+    params:
+        prefix = SPIKE_PREFIX,
+        spikein = SPIKEIN_ENABLED,
+        min_genes = SPIKEIN.get("min_genes", 50)
+    run:
+        def fail(msg):
+            with open(log[0], "a") as fh:
+                fh.write(msg + "\n")
+            raise WorkflowError(msg)
+
+        messages = []
+        gene_annot, gene = read_featurecounts(input.gene)
+        _, exon = read_featurecounts(input.exon)
+        is_spike = lambda df: df.index.str.startswith(params.prefix)
+
+        # host / spike-in count matrices
+        for df, host_out, spike_out in ((gene, output.gene_human, output.gene_spikein),
+                                        (exon, output.exon_human, output.exon_spikein)):
+            df[~is_spike(df)].to_csv(host_out, sep="\t", index_label="gene_id")
+            df[is_spike(df)].to_csv(spike_out, sep="\t", index_label="gene_id")
+        gene_host = gene[~is_spike(gene)]
+        exon_host = exon[~is_spike(exon)]
+
+        fragments = pd.concat(pd.read_csv(f, sep="\t", index_col="sample", dtype={"sample": str}, keep_default_na=False) for f in input.fragments)
+        fragments = fragments.loc[SAMPLES_LIST]
+        table = pd.DataFrame(index=pd.Index(SAMPLES_LIST, name="sample"))
+        table["host_fragments"] = fragments["host_fragments"]
+        table["spikein_fragments"] = fragments["spikein_fragments"]
+        total = table["host_fragments"] + table["spikein_fragments"]
+        table["spikein_pct"] = (100 * table["spikein_fragments"] / total.where(total > 0)).fillna(0)
+        gene_sum = gene_host.sum(axis=0)
+        table["exon_fraction"] = (exon_host.sum(axis=0) / gene_sum.where(gene_sum > 0)).fillna(0)
+
+        sf_depth, n_depth = median_of_ratios(gene_host)
+        if sf_depth is None:
+            fail("No host genes have gene-body counts in every sample: cannot compute depth size factors.")
+        table["sf_depth"] = sf_depth
+        messages.append(f"sf_depth: median-of-ratios over {n_depth} host genes")
+
+        if params.spikein:
+            on_excluded_contig = gene_annot["Chr"].astype(str).str.split(";").str[0].isin(
+                [f"{params.prefix}mitochondrion_genome", f"{params.prefix}rDNA"]
+            )
+            keep = is_spike(gene) & (gene_annot["gene_type"] != "rRNA") & ~on_excluded_contig
+            spike = gene[keep]
+            spike_totals = spike.sum(axis=0)
+            if (spike_totals == 0).any():
+                fail(
+                    "No spike-in gene counts for sample(s) "
+                    f"{spike_totals[spike_totals == 0].index.tolist()}: cannot spike-in normalize. "
+                    "Set 'spikein: enabled: false' in config.yaml if no Drosophila spike-in was used."
+                )
+            sf_spikein, n_spike = median_of_ratios(spike)
+            if sf_spikein is not None and n_spike >= params.min_genes:
+                method = "median_of_ratios"
+                messages.append(f"sf_spikein: median-of-ratios over {n_spike} spike-in genes")
+            else:
+                sf_spikein = spike_totals / np.exp(np.log(spike_totals.astype(float)).mean())
+                method = "total_counts"
+                messages.append(
+                    f"sf_spikein: only {n_spike} spike-in genes with counts in every sample "
+                    f"(< spikein.min_genes = {params.min_genes}); using total spike-in gene counts"
+                )
+            table["sf_spikein"] = sf_spikein
+            table["spikein_method"] = method
+
+        table.to_csv(output.table, sep="\t", float_format="%.6g")
+
+        # MultiQC general stats
+        columns = {
+            "spikein_pct": ("Spike-in %", "{:.2f}"),
+            "exon_fraction": ("Exonic frac.", "{:.3f}"),
+            "sf_depth": ("SF depth", "{:.3f}"),
+        }
+        if params.spikein:
+            columns["sf_spikein"] = ("SF spike-in", "{:.3f}")
+        with open(output.mqc, "w") as fh:
+            fh.write("# id: 'ttseq_norm'\n")
+            fh.write("# section_name: 'TT-seq normalization'\n")
+            fh.write("# plot_type: 'generalstats'\n")
+            fh.write("# pconfig:\n")
+            for col, (title, fmt) in columns.items():
+                fh.write(f"#     {col}:\n#         title: '{title}'\n#         format: '{fmt}'\n")
+            table[list(columns)].to_csv(fh, sep="\t", index_label="Sample", float_format="%.6g")
+
+        with open(output.pca, "w") as fh:
+            json.dump(pca_mqc(gene_host, table["sf_depth"]), fh, indent=2)
+
+        with open(log[0], "w") as fh:
+            fh.write("\n".join(messages) + "\n")
+
+
+rule bigwig:
+    # Strand-specific coverage of the host-only BAM, divided by the size factor. Reads are
+    # not extended (spliced data); both mates are counted.
+    input:
+        bam = f"{BAM_OUT}/human/{{sample}}.bam",
+        bai = f"{BAM_OUT}/human/{{sample}}.bam.bai",
+        sf = f"{SIZEFACTOR_OUT}/size_factors.tsv"
+    output:
+        bw = f"{BIGWIG_OUT}/{{sample}}.{{norm}}.{{strand}}.bw"
+    log:
+        f"{LOG_DIR}/bigwig/{{sample}}.{{norm}}.{{strand}}.log"
+    params:
+        rna_strand = lambda w: RNA_STRAND[w.strand],
+        bin_size = config["bigwig"]["bin_size"],
+        dups = "--samFlagExclude 1024" if REMOVE_DUPS else "",
+        extra = config["bigwig"]["extra_params"]
+    threads:
+        config.get("bigwig", {}).get("threads", 6)
+    conda:
+        "envs/deeptools.yaml"
+    shell:
+        """
+        sf=$(awk -F '\\t' -v s={wildcards.sample} -v col=sf_{wildcards.norm} \
+            'NR == 1 {{ for (i = 1; i <= NF; i++) if ($i == col) c = i; next }} c && ($1 "") == (s "") {{ print $c }}' {input.sf})
+        if [ -z "$sf" ] || [ "$(printf '%s\n' "$sf" | wc -l)" -ne 1 ]; then
+            echo "Expected exactly one sf_{wildcards.norm} size factor for {wildcards.sample} in {input.sf}, got: $sf" | tee {log} >&2
+            exit 1
+        fi
+        scale=$(awk -v sf="$sf" 'BEGIN {{ printf "%.10g", 1 / sf }}')
+        echo "size factor $sf -> scaleFactor $scale" > {log}
+        bamCoverage \
+            --bam {input.bam} \
+            --outFileName {output.bw} \
+            --outFileFormat bigwig \
+            --filterRNAstrand {params.rna_strand} \
+            --scaleFactor "$scale" \
+            --normalizeUsing None \
+            --binSize {params.bin_size} \
+            {params.dups} \
+            --numberOfProcessors {threads} \
+            {params.extra} &>> {log}
+        """
+
+
+rule rustqc:
+    input:
+        bam = f"{BAM_OUT}/human/{{sample}}.bam",
+        bai = f"{BAM_OUT}/human/{{sample}}.bam.bai"
+    output:
+        json = f"{RUSTQC_OUT}/{{sample}}/{{sample}}_summary.json"
+    params:
+        gtf = config["annotation_gtf"],
+        biotype = config["rustqc"]["biotype"],
+        stranded = STRANDEDNESS,
+        outdir = f"{RUSTQC_OUT}/{{sample}}"
+    log:
+        f"{LOG_DIR}/rustqc/{{sample}}.log"
+    threads:
+        config.get("rustqc", {}).get("threads", 4)
+    conda:
+        "envs/rustqc.yaml"
+    shell:
+        """
+        rustqc rna {input.bam} \
+          --gtf {params.gtf} \
+          --sample-name {wildcards.sample} \
+          --json-summary {output.json} \
+          --stranded {params.stranded} \
+          --paired \
+          --skip-dup-check \
+          --biotype-attribute {params.biotype} \
+          --threads {threads} \
+          --outdir {params.outdir} &> {log}
+        """
+
+
+rule multiqc:
+    input:
+        expand(f"{FASTP_OUT}/{{sample}}.fastp.json", sample=SAMPLES_LIST),
+        expand(f"{STAR_OUT}/{{sample}}.Log.final.out", sample=SAMPLES_LIST),
+        expand(f"{BAM_OUT}/{{sample}}.markdup.stats.txt", sample=SAMPLES_LIST),
+        f"{COUNTS_OUT}/gene.featureCounts.txt.summary",
+        f"{SIZEFACTOR_OUT}/size_factors_mqc.tsv",
+        f"{SIZEFACTOR_OUT}/pca_mqc.json",
+        expand(f"{RUSTQC_OUT}/{{sample}}/{{sample}}_summary.json", sample=SAMPLES_LIST)
+    output:
+        html_report = f"{MULTIQC_OUT}/multiqc_report.html",
+        data_dir = directory(f"{MULTIQC_OUT}/multiqc_data")
+    log:
+        f"{LOG_DIR}/multiqc/multiqc.log"
+    params:
+        search_dirs = f"{FASTP_OUT} {STAR_OUT} {BAM_OUT} {COUNTS_OUT} {SIZEFACTOR_OUT} {RUSTQC_OUT}",
+        output_dir = MULTIQC_OUT
+    conda:
+        "envs/multiqc.yaml"
+    # MultiQC keeps only one featureCounts summary per sample name, so only this workflow's
+    # gene-level summary is reported: the exon-level one (the exonic fraction is in
+    # size_factors_mqc.tsv instead) and RustQC's own featureCounts summaries are ignored
+    shell:
+        """
+        multiqc --force {params.search_dirs} \
+            --ignore '*exon.featureCounts.txt.summary' \
+            --ignore '*/rustqc/*/featurecounts/*.summary' \
+            -o {params.output_dir} &> {log}
+        """
