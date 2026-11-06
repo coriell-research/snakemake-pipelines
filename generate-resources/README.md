@@ -18,7 +18,7 @@ the salmon 1.10.0 that `rnaseq-pe` uses to read it (the wrapper ships the salmon
    cd snakemake-pipelines/generate-resources
    ```
 2. Review `config.yaml`: `resources_dir` (where everything is written), the GENCODE release
-   URLs for human/mouse, and `spike_ins`
+   URLs for human/mouse, the Ensembl *Drosophila* URLs under `drosophila`, and `spike_ins`
 3. Run the pipeline: `mamba activate snakemake && snakemake --use-conda --cores <N>`
 
    The workflow profile in `profiles/default` is picked up automatically and points job
@@ -32,10 +32,38 @@ the salmon 1.10.0 that `rnaseq-pe` uses to read it (the wrapper ships the salmon
    `config.yaml`, scaled down to `--cores` if that's lower. To allow more concurrent builds
    on a large-memory server, pass e.g. `--resources index_jobs=2`.
 
-Everything is written under `<resources_dir>/<assembly>/GENCODE/<release>/...`. The other
-pipelines' configs (`atacseq-pe`, `rnaseq-pe`, `rrbs-pe`, `de-novo-transcript-assembly`)
+Everything is written under `<resources_dir>/<assembly>/GENCODE/<release>/...` (the
+*Drosophila* downloads go to `<resources_dir>/BDGP6.54/Ensembl/114/`). The other
+pipelines' configs (`atacseq-pe`, `rnaseq-pe`, `rrbs-pe`, `de-novo-transcript-assembly`, `ttseq-pe`)
 expect this tree at the shared location `/mnt/data/references`, and default to the spike-in
-indices (ERCC + GFP, or lambda for Bismark).
+indices (ERCC + GFP, lambda for Bismark, or the host + dm6 index for `ttseq-pe`).
+
+`/mnt/data/references` is not writable by regular users. To add resources there, build them into
+a directory you can write to and have an admin copy them in (see *Building only the human +
+Drosophila resources* below).
+
+### Building only the human + Drosophila resources
+
+The `dm6` target builds just the host + *Drosophila* resources (and the 6 downloads they need)
+instead of every index. Since `/mnt/data/references` is read-only for regular users, build them
+into a directory you can write to:
+
+```
+snakemake --use-conda --cores 32 dm6 --config resources_dir=/path/to/my/references
+```
+
+The STAR index build needs ~35 GB RAM. Then either have an admin copy the new files into the
+shared tree (only these paths are new; nothing existing is overwritten):
+
+```
+/path/to/my/references/BDGP6.54/                                   -> /mnt/data/references/BDGP6.54/
+/path/to/my/references/GRCh38/GENCODE/v48/STAR_dm6_idx/           -> /mnt/data/references/GRCh38/GENCODE/v48/
+/path/to/my/references/GRCh38/GENCODE/v48/gencode.v48.basic.annotation.with_dm6.gtf.gz
+/path/to/my/references/GRCh38/GENCODE/v48/GRCh38.primary_assembly.genome.fa.dm6.chrom_sizes
+/path/to/my/references/GRCh38/GENCODE/v48/excluderanges.with_dm6.bed.gz
+```
+
+or point `star.index_dir` and `annotation_gtf` in `ttseq-pe/config.yaml` at your copy.
 
 ### Overview
 
@@ -79,6 +107,20 @@ GRCm39/M38, mouse GRCm38-mm10/M25):
    - `<assembly>.primary_assembly.genome.fa.chrom_sizes` - primary genome only
    - `<assembly>.primary_assembly.genome.fa.ercc_gfp.chrom_sizes` - includes ERCC + GFP entries
 
+5. Build a **host + *Drosophila* spike-in reference** (for TT-seq, see `ttseq-pe`) for each
+   assembly in `drosophila.hosts` (only GRCh38 for now; mouse is not built). The *Drosophila
+   melanogaster* genome and annotation come from Ensembl (BDGP6.54, release 114 to match
+   GENCODE v48; the BDGP6 sequence is the UCSC dm6 assembly). Every fly contig, `gene_id` and
+   `transcript_id` is prefixed with `dm6_` (e.g. `dm6_2L`, `dm6_FBgn0038189`) so nothing collides
+   with the host names, and the fly GTF's `transposable_element` entries (multi-copy FBti
+   insertions) are dropped and `gene_biotype`/`transcript_biotype` are renamed to GENCODE's
+   `gene_type`/`transcript_type`. From the prefixed files:
+   - STAR index of genome + dm6 (`STAR_dm6_idx/`)
+   - Combined annotation (`gencode.v48.basic.annotation.with_dm6.gtf.gz`)
+   - `<assembly>.primary_assembly.genome.fa.dm6.chrom_sizes` - includes the `dm6_` contigs
+   - `excluderanges.with_dm6.bed.gz` - host excluderanges plus the Boyle-lab dm6 excludable
+     regions (renamed `chr*` -> `dm6_*`), both cut to BED3
+
 ### Directory Structure
 
 ```
@@ -116,7 +158,20 @@ GRCm39/M38, mouse GRCm38-mm10/M25):
 ├── bwa-meth_lambda_idx/       # With lambda phage
 │
 ├── minibwa_idx/               # Primary only
-└── minibwa_ercc_gfp_idx/      # With ERCC + GFP
+├── minibwa_ercc_gfp_idx/      # With ERCC + GFP
+│
+│   # Host + Drosophila (GRCh38 only, see drosophila.hosts)
+├── STAR_dm6_idx/              # Genome + dm6_-prefixed fly genome
+├── gencode.v*.basic.annotation.with_dm6.gtf.gz
+├── <assembly>.primary_assembly.genome.fa.dm6.chrom_sizes
+└── excluderanges.with_dm6.bed.gz
+
+<resources_dir>/BDGP6.54/Ensembl/114/
+├── Drosophila_melanogaster.BDGP6.54.dna.toplevel.fa.gz           # Ensembl download
+├── Drosophila_melanogaster.BDGP6.54.dna.toplevel.dm6_prefixed.fa.gz
+├── Drosophila_melanogaster.BDGP6.54.114.gtf.gz                   # Ensembl download
+├── Drosophila_melanogaster.BDGP6.54.114.dm6_prefixed.gtf.gz
+└── excluderanges.bed.gz                                          # dm6 excludable (UCSC names)
 ```
 
 ### Notes
@@ -129,8 +184,9 @@ GRCm39/M38, mouse GRCm38-mm10/M25):
   bwa-meth and `faSize` all read the `.gz` files directly. Combined FASTAs are built by
   concatenating the gzipped files (`cat a.fa.gz b.fa.gz > c.fa.gz`, which is a valid gzip file),
   the same trick `rrbs-pe`'s `merge_lanes` rule uses for multi-lane FASTQs. The only
-  decompressed files are the genome, genome+ERCC+GFP FASTA and GTF that STAR needs (STAR can't
-  read gzip), and those are `temp()`, so they're deleted once the STAR indices are built.
+  decompressed files are the genome, genome+ERCC+GFP and genome+dm6 FASTAs and the (combined) GTFs
+  that STAR needs (STAR can't read gzip), and those are `temp()`, so they're deleted once the STAR
+  indices are built.
 - `rule combine_with_lambda` builds the genome + lambda FASTA used by Bismark and bwa-meth.
   That combined FASTA is kept (not
   `temp()`), because the Bismark wrapper places a relative symlink to its input FASTA inside the
@@ -151,3 +207,7 @@ GRCm39/M38, mouse GRCm38-mm10/M25):
   downloaded from this repo's own `generate-resources/data/` directory (see `spike_ins` in
   `config.yaml`) into `<resources_dir>/spike_ins/`, and are shared across all three species
   (the same physical spike-in/lambda preps are used regardless of the organism sequenced).
+- The `dm6_` prefix on *Drosophila* contigs/genes is fixed (`FLY_PREFIX` in the Snakefile) because
+  `ttseq-pe` relies on it (its `spike_prefix`) to split host and spike-in reads and genes. The
+  combined genome FASTA (`*.with_dm6.fa.gz`) and the plain copies STAR reads are `temp()`; the
+  prefixed fly FASTA/GTF are kept, so the combination can be rebuilt cheaply.

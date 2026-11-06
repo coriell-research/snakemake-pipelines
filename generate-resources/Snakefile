@@ -1,5 +1,6 @@
 import os
 import re
+from snakemake.exceptions import WorkflowError
 from snakemake.utils import validate
 
 
@@ -7,7 +8,7 @@ configfile: "config.yaml"
 validate(config, "schemas/config.schema.yaml")
 
 
-RESOURCES_DIR = config["resources_dir"]
+RESOURCES_DIR = config["resources_dir"].rstrip("/")
 SPIKE_INS = config["spike_ins"]
 LOG_DIR = "logs"
 
@@ -80,6 +81,44 @@ build_species(config["human"])
 build_species(config["mouse"]["m38"])
 build_species(config["mouse"]["m25"])
 
+# ---------------------------------------------------------------------------
+# Drosophila melanogaster spike-in genome (Ensembl BDGP6.54 = dm6 sequence).
+# Fly contigs, gene_ids and transcript_ids are prefixed with FLY_PREFIX so they
+# can't collide with host names (and so downstream workflows, e.g. ttseq-pe, can
+# split host vs. spike-in reads/genes by name). The prefix is fixed: ttseq-pe's
+# `spike_prefix` must match it. The prefixed fly FASTA/GTF are then combined
+# with each host assembly listed in drosophila.hosts.
+# ---------------------------------------------------------------------------
+FLY_PREFIX = "dm6_"
+FLY = config["drosophila"]
+FLY_DIR = f"{RESOURCES_DIR}/{FLY['assembly']}/Ensembl/{FLY['release']}"
+
+FLY_GENOME_FA_GZ = register(f"{FLY_DIR}/{basename_of(FLY['urls']['genome_fa'])}", FLY["urls"]["genome_fa"])
+FLY_GTF_GZ = register(f"{FLY_DIR}/{basename_of(FLY['urls']['annotation_gtf'])}", FLY["urls"]["annotation_gtf"])
+FLY_EXCLUDERANGES_BED_GZ = register(f"{FLY_DIR}/excluderanges.bed.gz", FLY["excluderanges"]["bed_url"])
+
+FLY_PREFIXED_FA_GZ = FLY_GENOME_FA_GZ.removesuffix(".fa.gz") + ".dm6_prefixed.fa.gz"
+FLY_PREFIXED_GTF_GZ = FLY_GTF_GZ.removesuffix(".gtf.gz") + ".dm6_prefixed.gtf.gz"
+
+DM6_HOSTS = FLY["hosts"]
+for host in DM6_HOSTS:
+    if host not in SPECIES:
+        raise WorkflowError(
+            f"drosophila.hosts entry '{host}' is not a configured assembly (one of: {', '.join(SPECIES)})"
+        )
+    host_dir = SPECIES[host]["dir"]
+    gtf_stem = basename_of(SPECIES[host]["annotation_gtf_gz"]).removesuffix(".gtf.gz")
+    dm6_fa_gz = f"{host_dir}/{host}.primary_assembly.genome.with_dm6.fa.gz"
+    dm6_gtf_gz = f"{host_dir}/{gtf_stem}.with_dm6.gtf.gz"
+    SPECIES[host].update({
+        "gtf_stem": gtf_stem,
+        "dm6_fa_gz": dm6_fa_gz,
+        "dm6_gtf_gz": dm6_gtf_gz,
+        # temp() plain copies, only for STAR (it can't read gzipped FASTA/GTF)
+        "star_with_dm6_fa": register_decompress(dm6_fa_gz),
+        "star_with_dm6_gtf": register_decompress(dm6_gtf_gz),
+    })
+
 wildcard_constraints:
     assembly = "|".join(re.escape(a) for a in SPECIES),
     release = "|".join(re.escape(s["release"]) for s in SPECIES.values())
@@ -117,6 +156,12 @@ MINIBWA_ERCC_GFP_PREFIX_T = f"{SPECIES_DIR_T}/minibwa_ercc_gfp_idx/{GENOME_STEM_
 CHROM_SIZES_ERCC_GFP_T = f"{SPECIES_DIR_T}/{GENOME_STEM_T}.fa.ercc_gfp.chrom_sizes"
 
 EXCLUDERANGES_BED_T = f"{SPECIES_DIR_T}/excluderanges.bed.gz"
+
+# Host + Drosophila (dm6_-prefixed) templates, built only for drosophila.hosts
+WITH_DM6_FA_GZ_T = f"{SPECIES_DIR_T}/{GENOME_STEM_T}.with_dm6.fa.gz"
+STAR_DM6_IDX_T = f"{SPECIES_DIR_T}/STAR_dm6_idx"
+CHROM_SIZES_DM6_T = f"{SPECIES_DIR_T}/{GENOME_STEM_T}.fa.dm6.chrom_sizes"
+EXCLUDERANGES_DM6_T = f"{SPECIES_DIR_T}/excluderanges.with_dm6.bed.gz"
 
 # Salmon decoy-aware index inputs (transient)
 SALMON_DECOYS_T = f"{SPECIES_DIR_T}/decoys.txt"
@@ -160,6 +205,19 @@ def expand_exts(prefix_template, exts):
     return [expand_species(f"{prefix_template}{ext}") for ext in exts]
 
 
+def expand_dm6_hosts(template):
+    return [template.format(assembly=a, release=SPECIES[a]["release"]) for a in DM6_HOSTS]
+
+
+def dm6_targets():
+    return [
+        expand_dm6_hosts(STAR_DM6_IDX_T),
+        expand_dm6_hosts(CHROM_SIZES_DM6_T),
+        expand_dm6_hosts(EXCLUDERANGES_DM6_T),
+        [SPECIES[h]["dm6_gtf_gz"] for h in DM6_HOSTS],
+    ]
+
+
 rule all:
     input:
         # Primary-only indices (no spike-ins)
@@ -186,18 +244,29 @@ rule all:
         expand_species(CHROM_SIZES_ERCC_GFP_T),
         # E. coli-only index (CUT&RUN spike-in normalization)
         multiext(BOWTIE2_ECOLI_PREFIX, *BOWTIE2_EXTS),
+        # Host + Drosophila (dm6_-prefixed) spike-in resources (TT-seq)
+        dm6_targets(),
         # Shared resources
         expand_species(EXCLUDERANGES_BED_T),
         EXTRA_TARGETS
 
 
+rule dm6:
+    # Build only the host + Drosophila resources (and the downloads they need):
+    #   snakemake --use-conda --cores <N> dm6 --config resources_dir=<writable dir>
+    input:
+        dm6_targets()
+
+
 rule download:
+    # {path} is relative to resources_dir, so the log path stays relative (an absolute
+    # resources_dir would otherwise give "logs/download//mnt/...").
     output:
-        "{path}"
+        f"{RESOURCES_DIR}/{{path}}"
     wildcard_constraints:
-        path = "|".join(re.escape(p) for p in DOWNLOADS)
+        path = "|".join(re.escape(p.removeprefix(f"{RESOURCES_DIR}/")) for p in DOWNLOADS)
     params:
-        url = lambda wildcards: DOWNLOADS[wildcards.path]
+        url = lambda wildcards: DOWNLOADS[f"{RESOURCES_DIR}/{wildcards.path}"]
     log:
         f"{LOG_DIR}/download/{{path}}.log"
     shell:
@@ -490,6 +559,116 @@ rule chrom_sizes_ercc_gfp:
         "envs/ucsc.yaml"
     shell:
         "faSize -detailed -tab {input.combined} > {output} 2> {log}"
+
+
+# ---------------------------------------------------------------------------
+# Host + Drosophila spike-in resources. The fly genome/annotation are prefixed
+# with FLY_PREFIX ("dm6_") and concatenated onto the host genome/annotation.
+# ---------------------------------------------------------------------------
+
+rule fly_prefix_fasta:
+    # ">2L dna:primary_assembly ..." -> ">dm6_2L"
+    input:
+        FLY_GENOME_FA_GZ
+    output:
+        FLY_PREFIXED_FA_GZ
+    params:
+        prefix = FLY_PREFIX
+    shell:
+        "gzip -dc {input} | sed -e 's/^>/>{params.prefix}/' -e '/^>/s/ .*//' | gzip > {output}"
+
+
+rule fly_prefix_gtf:
+    # Prefix seqname/gene_id/transcript_id with dm6_, drop the multi-copy
+    # transposable_element "genes" (FBti insertions), and rename gene_biotype/
+    # transcript_biotype to GENCODE's gene_type/transcript_type so the combined
+    # GTF has one biotype attribute name.
+    input:
+        FLY_GTF_GZ
+    output:
+        FLY_PREFIXED_GTF_GZ
+    params:
+        prefix = FLY_PREFIX
+    shell:
+        """
+        gzip -dc {input} | \
+        awk -v p={params.prefix} 'BEGIN{{FS=OFS="\\t"}} /^#/{{next}} $9 ~ /gene_biotype "transposable_element"/{{next}} {{$1=p $1; gsub(/gene_id "/,"gene_id \\"" p,$9); gsub(/transcript_id "/,"transcript_id \\"" p,$9); sub(/gene_biotype/,"gene_type",$9); sub(/transcript_biotype/,"transcript_type",$9); print}}' | \
+        gzip > {output}
+        """
+
+
+rule combine_with_dm6:
+    # Concatenated gzip members form a valid gzip file (see combine_with_spikes).
+    input:
+        genome = species_file("genome_fa_gz"),
+        fly = FLY_PREFIXED_FA_GZ
+    output:
+        temp(WITH_DM6_FA_GZ_T)
+    shell:
+        "cat {input.genome} {input.fly} > {output}"
+
+
+rule combine_gtf_with_dm6:
+    # Kept (not temp): ttseq-pe counts genes against this combined annotation.
+    # The output name follows the host GTF's own stem, so it gets its own wildcard.
+    input:
+        host = species_file("annotation_gtf_gz"),
+        fly = FLY_PREFIXED_GTF_GZ
+    output:
+        f"{SPECIES_DIR_T}/{{gtf_stem}}.with_dm6.gtf.gz"
+    wildcard_constraints:
+        gtf_stem = "|".join(re.escape(SPECIES[h]["gtf_stem"]) for h in DM6_HOSTS)
+    shell:
+        "cat {input.host} {input.fly} > {output}"
+
+
+rule star_dm6_index:
+    input:
+        fasta = species_file("star_with_dm6_fa"),
+        gtf = species_file("star_with_dm6_gtf")
+    output:
+        directory(STAR_DM6_IDX_T)
+    params:
+        sjdbOverhang = lambda wildcards: SPECIES[wildcards.assembly]["star_sjdb_overhang"],
+        extra = ""
+    threads:
+        config.get("threads", {}).get("star", 32)
+    resources:
+        index_jobs = 1
+    log:
+        f"{LOG_DIR}/star_dm6_index/{{assembly}}_{{release}}.log"
+    wrapper:
+        "v9.17.1/bio/star/index"
+
+
+rule chrom_sizes_dm6:
+    # One row per sequence of the combined host + dm6_ FASTA.
+    input:
+        combined = WITH_DM6_FA_GZ_T
+    output:
+        CHROM_SIZES_DM6_T
+    log:
+        f"{LOG_DIR}/chrom_sizes_dm6/{{assembly}}_{{release}}.log"
+    conda:
+        "envs/ucsc.yaml"
+    shell:
+        "faSize -detailed -tab {input.combined} > {output} 2> {log}"
+
+
+rule excluderanges_with_dm6:
+    # Both files cut to BED3 (host is bed5, fly bed4+2). The fly BED uses UCSC
+    # names (chr2L, chrX, ...), which map onto the prefixed Ensembl names.
+    input:
+        host = EXCLUDERANGES_BED_T,
+        fly = FLY_EXCLUDERANGES_BED_GZ
+    output:
+        EXCLUDERANGES_DM6_T
+    params:
+        prefix = FLY_PREFIX
+    shell:
+        """
+        {{ gzip -dc {input.host} | cut -f1-3; gzip -dc {input.fly} | cut -f1-3 | sed 's/^chr/{params.prefix}/'; }} | gzip > {output}
+        """
 
 
 # ---------------------------------------------------------------------------
