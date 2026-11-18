@@ -1,0 +1,857 @@
+import os
+import re
+
+import pandas as pd
+from snakemake.utils import validate
+
+
+configfile: "config.yaml"
+validate(config, schema="schemas/config.schema.yaml")
+
+WORK_DIR = config.get("work_dir", "results")
+FASTP_OUT = f"{WORK_DIR}/fastp"
+STAR_OUT = f"{WORK_DIR}/star"
+MARKDUP_OUT = f"{WORK_DIR}/markdup"
+SPLIT_OUT = f"{WORK_DIR}/split"
+RECAL_OUT = f"{WORK_DIR}/recal"
+MOSDEPTH_OUT = f"{WORK_DIR}/mosdepth"
+HC_OUT = f"{WORK_DIR}/haplotypecaller"
+DV_OUT = f"{WORK_DIR}/deepvariant"
+BCFTOOLS_OUT = f"{WORK_DIR}/bcftools"
+PASS_OUT = f"{WORK_DIR}/pass"
+CONSENSUS_OUT = f"{WORK_DIR}/consensus"
+ANNOTATED_OUT = f"{WORK_DIR}/vep"
+STATS_OUT = f"{WORK_DIR}/bcftools_stats"
+MULTIQC_OUT = f"{WORK_DIR}/multiqc"
+
+# Samples -----------------------------------------------------------------
+
+SAMPLES = pd.read_csv(
+    "samples.csv", sep=",", header=0,
+    dtype={"sample": str, "lane": str},
+)
+validate(SAMPLES, schema="schemas/samples.schema.yaml")
+
+if SAMPLES.duplicated(["sample", "lane"]).any():
+    raise ValueError("samples.csv: each (sample, lane) pair must be unique")
+
+# lanes belonging to each (biological) sample - aligned together by STAR
+LANES_BY_SAMPLE = SAMPLES.groupby("sample", sort=False)["lane"].agg(list).to_dict()
+ALL_SAMPLES = sorted(LANES_BY_SAMPLE)
+
+# one fastp report per (sample, lane) row - not an expand() cross product
+FASTP_JSONS = [f"{FASTP_OUT}/{row.sample}/{row.lane}.fastp.json" for row in SAMPLES.itertuples()]
+
+# Callers whose PASS calls feed the consensus; their filtered per-sample VCFs
+CALLERS = ["haplotypecaller", "deepvariant", "bcftools"]
+CALLER_VCF = {
+    "haplotypecaller": f"{HC_OUT}/{{sample}}.filtered.vcf.gz",
+    "deepvariant": f"{DV_OUT}/{{sample}}.vcf.gz",
+    "bcftools": f"{BCFTOOLS_OUT}/{{sample}}.filtered.vcf.gz",
+}
+# Call sets that are annotated / summarised
+CALL_SETS = CALLERS + ["consensus"]
+
+
+def _alternation_or_no_match(values):
+    values = list(values)
+    return "|".join(re.escape(v) for v in values) if values else "(?!)"
+
+
+wildcard_constraints:
+    sample = _alternation_or_no_match(ALL_SAMPLES),
+    lane = "[^/]+",
+    caller = _alternation_or_no_match(CALLERS),
+    callset = _alternation_or_no_match(CALL_SETS),
+
+
+# Reference / resources -----------------------------------------------------
+DOWNLOAD_DIR = "resources"
+ANNOT_DIR = f"{DOWNLOAD_DIR}/annotation"
+VEP_CACHE_OUT = f"{DOWNLOAD_DIR}/vep/cache"
+VEP_PLUGINS_OUT = f"{DOWNLOAD_DIR}/vep/plugins"
+
+FASTA = config["ref"]["fasta"]
+FAI = f"{FASTA}.fai"
+DICT = re.sub(r"\.(fa|fasta)$", ".dict", FASTA)
+GTF = config["ref"]["gtf"]
+STAR_INDEX = config["star"]["index"]
+
+KNOWN = config["known_sites"]
+KNOWN_SITES = [KNOWN["dbsnp"], KNOWN["mills"], KNOWN["known_indels"]]
+KNOWN_SITES_TBI = [f"{v}.tbi" for v in KNOWN_SITES]
+
+GENOME_GZ = f"{DOWNLOAD_DIR}/{os.path.basename(config['ref']['genome_url'])}"
+GTF_GZ = f"{DOWNLOAD_DIR}/{os.path.basename(config['ref']['gtf_url'])}"
+
+# resources/<file> -> URL, fetched by download_resource
+RESOURCE_URLS = {
+    os.path.basename(GENOME_GZ): config["ref"]["genome_url"],
+    os.path.basename(GTF_GZ): config["ref"]["gtf_url"],
+}
+for _vcf in KNOWN_SITES:
+    for _f in (os.path.basename(_vcf), os.path.basename(_vcf) + ".tbi"):
+        RESOURCE_URLS[_f] = f"{KNOWN['gatk_bucket']}/{_f}"
+
+EXONS_BED = f"{ANNOT_DIR}/exons.bed"
+CDS_BED = f"{ANNOT_DIR}/cds.bed"
+CALLING_INTERVALS = f"{ANNOT_DIR}/exons.interval_list"
+
+DV_REGIONS = config["deepvariant"]["regions"]
+DV_MIN_COV = DV_REGIONS["min_coverage"]
+
+
+# Rules ----------------------------------------------------------------------
+
+
+rule all:
+    input:
+        expand(f"{ANNOTATED_OUT}/{{callset}}/{{sample}}.vcf.gz.tbi", callset=CALL_SETS, sample=ALL_SAMPLES),
+        expand(f"{RECAL_OUT}/{{sample}}.bam", sample=ALL_SAMPLES),
+        expand(f"{MOSDEPTH_OUT}/{{sample}}.mosdepth.summary.txt", sample=ALL_SAMPLES),
+        f"{MULTIQC_OUT}/multiqc_report.html",
+
+
+rule download_resource:
+    output:
+        f"{DOWNLOAD_DIR}/{{resource}}"
+    wildcard_constraints:
+        resource = _alternation_or_no_match(RESOURCE_URLS.keys())
+    params:
+        url = lambda w: RESOURCE_URLS[w.resource]
+    log:
+        f"{DOWNLOAD_DIR}/logs/{{resource}}.log"
+    conda:
+        "envs/curl.yaml"
+    shell:
+        "curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors -o {output} {params.url} 2> {log}"
+
+
+rule gunzip_fasta:
+    input:
+        GENOME_GZ
+    output:
+        FASTA
+    shell:
+        "gunzip -c {input} > {output}"
+
+
+rule gunzip_gtf:
+    input:
+        GTF_GZ
+    output:
+        GTF
+    shell:
+        "gunzip -c {input} > {output}"
+
+
+rule faidx:
+    input:
+        FASTA
+    output:
+        FAI
+    log:
+        f"{DOWNLOAD_DIR}/logs/faidx.log"
+    wrapper:
+        "v9.17.1/bio/samtools/faidx"
+
+
+rule sequence_dictionary:
+    input:
+        FASTA
+    output:
+        DICT
+    resources:
+        mem_mb = 4096
+    params:
+        extra = "",
+    log:
+        f"{DOWNLOAD_DIR}/logs/sequence_dictionary.log"
+    wrapper:
+        "v9.17.1/bio/picard/createsequencedictionary"
+
+
+rule star_index:
+    input:
+        fasta = FASTA,
+        gtf = GTF,
+    output:
+        directory(STAR_INDEX)
+    threads:
+        16
+    params:
+        sjdbOverhang = config["star"]["sjdb_overhang"],
+        extra = "",
+    log:
+        f"{DOWNLOAD_DIR}/logs/star_index.log"
+    # overrides the wrapper env - see envs/star.yaml (AVX2)
+    conda:
+        "envs/star.yaml"
+    wrapper:
+        "v9.17.1/bio/star/index"
+
+
+# Annotation BEDs: gffread writes one BED12 line per transcript (blocks = exons,
+# thickStart/thickEnd = CDS incl. stop codon); -C keeps coding transcripts only.
+rule gffread_transcripts:
+    input:
+        annotation = GTF,
+        fasta = FASTA,
+        fai = FAI,
+    output:
+        records = f"{ANNOT_DIR}/transcripts.bed",
+    params:
+        extra = "",
+    log:
+        f"{DOWNLOAD_DIR}/logs/gffread_transcripts.log"
+    wrapper:
+        "v9.17.1/bio/gffread"
+
+
+rule gffread_coding_transcripts:
+    input:
+        annotation = GTF,
+        fasta = FASTA,
+        fai = FAI,
+    output:
+        records = f"{ANNOT_DIR}/coding_transcripts.bed",
+    params:
+        extra = "-C",
+    log:
+        f"{DOWNLOAD_DIR}/logs/gffread_coding_transcripts.log"
+    wrapper:
+        "v9.17.1/bio/gffread"
+
+
+rule annotation_beds:
+    input:
+        transcripts = f"{ANNOT_DIR}/transcripts.bed",
+        coding = f"{ANNOT_DIR}/coding_transcripts.bed",
+    output:
+        exons = EXONS_BED,
+        cds = CDS_BED,
+    log:
+        f"{DOWNLOAD_DIR}/logs/annotation_beds.log"
+    conda:
+        "envs/bedtools.yaml"
+    shell:
+        """
+        # column 13 holds gffread's attributes; bedtools wants plain BED12
+        (cut -f1-12 {input.transcripts} \
+            | bedtools bed12tobed6 -i stdin \
+            | sort -k1,1 -k2,2n \
+            | bedtools merge -i stdin > {output.exons}
+
+        # exon blocks clipped to each transcript's thickStart/thickEnd
+        cut -f1-12 {input.coding} \
+            | awk 'BEGIN {{OFS="\\t"}} $7 < $8 {{
+                split($11, size, ","); split($12, start, ",");
+                for (i = 1; i <= $10; i++) {{
+                    s = $2 + start[i]; e = s + size[i];
+                    if (s < $7) s = $7;
+                    if (e > $8) e = $8;
+                    if (s < e) print $1, s, e
+                }}
+              }}' \
+            | sort -k1,1 -k2,2n \
+            | bedtools merge -i stdin > {output.cds}) 2> {log}
+        """
+
+
+# HaplotypeCaller / bcftools calling intervals (GATK RNA WDL: GTF exons -> interval_list)
+rule calling_intervals:
+    input:
+        bed = EXONS_BED,
+        dict = DICT,
+    output:
+        CALLING_INTERVALS
+    resources:
+        mem_mb = 4096
+    params:
+        extra = "--SORT true --UNIQUE true",
+    log:
+        f"{DOWNLOAD_DIR}/logs/calling_intervals.log"
+    wrapper:
+        "v9.17.1/bio/picard/bedtointervallist"
+
+
+rule vep_cache:
+    output:
+        directory(VEP_CACHE_OUT)
+    params:
+        species = config["vep"]["species"],
+        build = config["vep"]["build"],
+        release = config["vep"]["release"],
+    log:
+        f"{DOWNLOAD_DIR}/logs/vep_cache.log"
+    cache:
+        "omit-software"
+    wrapper:
+        "v9.17.1/bio/vep/cache"
+
+
+# vep/annotate requires a plugins directory even when no plugins are used
+rule vep_plugins_dir:
+    output:
+        directory(VEP_PLUGINS_OUT)
+    shell:
+        "mkdir -p {output}"
+
+
+# Convenience target to pre-fetch / build every reference resource in one go.
+rule download_resources:
+    input:
+        expand(f"{DOWNLOAD_DIR}/{{resource}}", resource=RESOURCE_URLS.keys()),
+        FAI,
+        DICT,
+        STAR_INDEX,
+        EXONS_BED,
+        CDS_BED,
+        CALLING_INTERVALS,
+        VEP_CACHE_OUT,
+
+
+# Alignment ---------------------------------------------------------------------
+
+
+rule fastp:
+    input:
+        sample = lambda w: SAMPLES.loc[
+            (SAMPLES["sample"] == w.sample) & (SAMPLES["lane"] == w.lane), ["read1", "read2"]
+        ].iloc[0].tolist(),
+    output:
+        trimmed = [
+            temp(f"{FASTP_OUT}/{{sample}}/{{lane}}.trimmed.1.fq.gz"),
+            temp(f"{FASTP_OUT}/{{sample}}/{{lane}}.trimmed.2.fq.gz"),
+        ],
+        html = f"{FASTP_OUT}/{{sample}}/{{lane}}.fastp.html",
+        json = f"{FASTP_OUT}/{{sample}}/{{lane}}.fastp.json",
+    threads:
+        4
+    params:
+        extra = config["fastp"]["extra"],
+    log:
+        f"{FASTP_OUT}/{{sample}}/{{lane}}.log"
+    wrapper:
+        "v9.17.1/bio/fastp"
+
+
+def star_extra(wildcards):
+    # one read group per lane, in the same order as fq1/fq2 (STAR separates them with " , ")
+    rg = " , ".join(
+        f"ID:{wildcards.sample}.{lane} SM:{wildcards.sample} LB:{wildcards.sample} PL:ILLUMINA PU:{lane}"
+        for lane in LANES_BY_SAMPLE[wildcards.sample]
+    )
+    # the wrapper only streams a sorted BAM if this exact string is present
+    return (
+        "--outSAMtype BAM SortedByCoordinate "
+        f"--twopassMode {config['star']['twopass_mode']} "
+        f"--outSAMattrRGline {rg} "
+        f"--limitBAMsortRAM {config['star']['limit_bam_sort_ram']} "
+        f"{config['star']['extra']}"
+    )
+
+
+# All lanes of a sample are aligned in one STAR run (so 2-pass junction discovery
+# sees all of them) and tagged with per-lane read groups; no MergeSamFiles needed.
+rule star_align:
+    input:
+        fq1 = lambda w: [f"{FASTP_OUT}/{w.sample}/{l}.trimmed.1.fq.gz" for l in LANES_BY_SAMPLE[w.sample]],
+        fq2 = lambda w: [f"{FASTP_OUT}/{w.sample}/{l}.trimmed.2.fq.gz" for l in LANES_BY_SAMPLE[w.sample]],
+        idx = STAR_INDEX,
+    output:
+        aln = temp(f"{STAR_OUT}/{{sample}}.Aligned.sortedByCoord.out.bam"),
+        log = f"{STAR_OUT}/{{sample}}.Log.out",
+        log_final = f"{STAR_OUT}/{{sample}}.Log.final.out",
+        sj = f"{STAR_OUT}/{{sample}}.SJ.out.tab",
+    threads:
+        12
+    resources:
+        mem_mb = 64000
+    params:
+        extra = star_extra,
+    log:
+        f"{STAR_OUT}/{{sample}}.log"
+    # overrides the wrapper env - see envs/star.yaml (AVX2)
+    conda:
+        "envs/star.yaml"
+    wrapper:
+        "v9.17.1/bio/star/align"
+
+
+rule mark_duplicates:
+    input:
+        bams = f"{STAR_OUT}/{{sample}}.Aligned.sortedByCoord.out.bam",
+    output:
+        bam = f"{MARKDUP_OUT}/{{sample}}.bam",
+        idx = f"{MARKDUP_OUT}/{{sample}}.bam.bai",
+        metrics = f"{MARKDUP_OUT}/{{sample}}.metrics.txt",
+    resources:
+        mem_mb = 16384
+    params:
+        extra = "--ASSUME_SORT_ORDER coordinate",
+    log:
+        f"{MARKDUP_OUT}/{{sample}}.log"
+    wrapper:
+        "v9.17.1/bio/picard/markduplicates"
+
+
+# GATK preprocessing ---------------------------------------------------------------
+
+
+# Splits reads at N CIGAR elements and (by default) resets STAR's unique-read MAPQ
+# 255 -> 60, which HaplotypeCaller would otherwise filter out.
+rule split_n_cigar_reads:
+    input:
+        bam = f"{MARKDUP_OUT}/{{sample}}.bam",
+        bai = f"{MARKDUP_OUT}/{{sample}}.bam.bai",
+        ref = FASTA,
+        fai = FAI,
+        dict = DICT,
+    output:
+        # the wrapper writes to output[0]; GATK writes the index as <name>.bai
+        bam = temp(f"{SPLIT_OUT}/{{sample}}.bam"),
+        bai = temp(f"{SPLIT_OUT}/{{sample}}.bai"),
+    resources:
+        mem_mb = 16384
+    params:
+        extra = "",
+    log:
+        f"{SPLIT_OUT}/{{sample}}.log"
+    wrapper:
+        "v9.17.1/bio/gatk/splitncigarreads"
+
+
+rule base_recalibrator:
+    input:
+        bam = f"{SPLIT_OUT}/{{sample}}.bam",
+        bai = f"{SPLIT_OUT}/{{sample}}.bai",
+        ref = FASTA,
+        fai = FAI,
+        dict = DICT,
+        # every entry of `known` becomes --known-sites, so indices go in their own key
+        known = KNOWN_SITES,
+        known_idx = KNOWN_SITES_TBI,
+    output:
+        recal_table = f"{RECAL_OUT}/{{sample}}.recal_table.txt",
+    resources:
+        mem_mb = 8192
+    params:
+        extra = "--use-original-qualities",
+    log:
+        f"{RECAL_OUT}/{{sample}}.base_recalibrator.log"
+    wrapper:
+        "v9.17.1/bio/gatk/baserecalibrator"
+
+
+rule apply_bqsr:
+    input:
+        bam = f"{SPLIT_OUT}/{{sample}}.bam",
+        bai = f"{SPLIT_OUT}/{{sample}}.bai",
+        ref = FASTA,
+        fai = FAI,
+        dict = DICT,
+        recal_table = f"{RECAL_OUT}/{{sample}}.recal_table.txt",
+    output:
+        bam = f"{RECAL_OUT}/{{sample}}.bam",
+        bai = f"{RECAL_OUT}/{{sample}}.bai",
+    resources:
+        mem_mb = 8192
+    params:
+        extra = "--use-original-qualities --add-output-sam-program-record",
+    log:
+        f"{RECAL_OUT}/{{sample}}.apply_bqsr.log"
+    wrapper:
+        "v9.17.1/bio/gatk/applybqsr"
+
+
+# GATK HaplotypeCaller -----------------------------------------------------------
+
+
+rule haplotype_caller:
+    input:
+        bam = f"{RECAL_OUT}/{{sample}}.bam",
+        bai = f"{RECAL_OUT}/{{sample}}.bai",
+        ref = FASTA,
+        fai = FAI,
+        dict = DICT,
+        intervals = CALLING_INTERVALS,
+        known = KNOWN["dbsnp"],
+        known_idx = f"{KNOWN['dbsnp']}.tbi",
+    output:
+        vcf = f"{HC_OUT}/{{sample}}.vcf.gz",
+    threads:
+        4
+    resources:
+        mem_mb = 16384
+    params:
+        extra = config["gatk"]["haplotypecaller_extra"],
+    log:
+        f"{HC_OUT}/{{sample}}.log"
+    wrapper:
+        "v9.17.1/bio/gatk/haplotypecaller"
+
+
+rule variant_filtration:
+    input:
+        vcf = f"{HC_OUT}/{{sample}}.vcf.gz",
+        ref = FASTA,
+        fai = FAI,
+        dict = DICT,
+    output:
+        vcf = f"{HC_OUT}/{{sample}}.filtered.vcf.gz",
+    resources:
+        mem_mb = 4096
+    params:
+        filters = config["gatk"]["filters"],
+        extra = config["gatk"]["filter_extra"],
+    log:
+        f"{HC_OUT}/{{sample}}.filter.log"
+    wrapper:
+        "v9.17.1/bio/gatk/variantfiltration"
+
+
+# Coverage ---------------------------------------------------------------------------
+
+
+# Per-exon coverage plus a quantized track used to restrict DeepVariant to bases
+# covered by >= min_coverage reads (bins "0:<min>" and "<min>:inf").
+rule mosdepth:
+    input:
+        bam = f"{MARKDUP_OUT}/{{sample}}.bam",
+        bai = f"{MARKDUP_OUT}/{{sample}}.bam.bai",
+        bed = EXONS_BED,
+    output:
+        dist = f"{MOSDEPTH_OUT}/{{sample}}.mosdepth.global.dist.txt",
+        summary = f"{MOSDEPTH_OUT}/{{sample}}.mosdepth.summary.txt",
+        bed = f"{MOSDEPTH_OUT}/{{sample}}.regions.bed.gz",
+        bed_dist = f"{MOSDEPTH_OUT}/{{sample}}.mosdepth.region.dist.txt",
+        quant = f"{MOSDEPTH_OUT}/{{sample}}.quantized.bed.gz",
+    threads:
+        4
+    params:
+        quantize = f"0:{DV_MIN_COV}:",
+        extra = config["mosdepth"]["extra"],
+    log:
+        f"{MOSDEPTH_OUT}/{{sample}}.log"
+    wrapper:
+        "v9.17.1/bio/mosdepth"
+
+
+# DeepVariant -----------------------------------------------------------------------
+
+
+rule deepvariant_regions:
+    input:
+        quant = f"{MOSDEPTH_OUT}/{{sample}}.quantized.bed.gz",
+        feature = CDS_BED if DV_REGIONS["feature"] == "CDS" else EXONS_BED,
+    output:
+        f"{DV_OUT}/{{sample}}.regions.bed"
+    params:
+        label = f"{DV_MIN_COV}:inf",
+    log:
+        f"{DV_OUT}/{{sample}}.regions.log"
+    conda:
+        "envs/bedtools.yaml"
+    shell:
+        """
+        (gzip -dc {input.quant} \
+            | awk -v label='{params.label}' '$4 == label' \
+            | cut -f1-3 \
+            | bedtools intersect -a stdin -b {input.feature} \
+            | sort -k1,1 -k2,2n \
+            | bedtools merge -i stdin > {output}) 2> {log}
+        """
+
+
+def deepvariant_inputs(wildcards):
+    files = {
+        "bam": f"{MARKDUP_OUT}/{wildcards.sample}.bam",
+        "bai": f"{MARKDUP_OUT}/{wildcards.sample}.bam.bai",
+        "ref": FASTA,
+        "fai": FAI,
+    }
+    if DV_REGIONS["restrict"]:
+        files["regions"] = f"{DV_OUT}/{wildcards.sample}.regions.bed"
+    return files
+
+
+def deepvariant_extra(wildcards, input, threads):
+    extra = (
+        "--model_type=RNASEQ "
+        f"--reads={input.bam} "
+        f"--sample_name={wildcards.sample} "
+        f"--num_shards={threads} "
+        f"{config['deepvariant']['extra']}"
+    )
+    if DV_REGIONS["restrict"]:
+        extra += f" --regions={input.regions}"
+    return extra
+
+
+DEEPVARIANT_SCRIPTS_DIR = os.path.abspath(".")
+
+DEEPVARIANT_BIND_PATHS = sorted({
+    os.path.abspath(WORK_DIR),
+    DEEPVARIANT_SCRIPTS_DIR,
+    # realpath so a symlinked resources/ directory is bound at its real location
+    os.path.dirname(os.path.realpath(FASTA)),
+    "/usr/lib/locale/",
+})
+
+
+# Runs on the MarkDuplicates BAM (not SplitNCigarReads): the RNASEQ model splits
+# spliced reads itself (split_skip_reads) and requires MAPQ >= 40 (STAR unique = 255).
+rule deepvariant:
+    input:
+        unpack(deepvariant_inputs)
+    output:
+        vcf = f"{DV_OUT}/{{sample}}.vcf.gz"
+    threads:
+        16
+    params:
+        extra = deepvariant_extra,
+        bind = " ".join(f"-B {p}" for p in DEEPVARIANT_BIND_PATHS),
+        bin_version = config["deepvariant"]["bin_version"],
+        intermediate_dir = f"{DV_OUT}/{{sample}}.intermediate",
+        logging_dir = f"{DV_OUT}/{{sample}}.logs",
+        pwd = DEEPVARIANT_SCRIPTS_DIR,
+    log:
+        f"{DV_OUT}/{{sample}}.log"
+    shell:
+        """
+        mkdir -p {params.intermediate_dir}/tmp {params.logging_dir}
+        export TMPDIR=$(realpath {params.intermediate_dir}/tmp)
+        singularity run --no-home --pwd {params.pwd} {params.bind} \
+            docker://google/deepvariant:{params.bin_version} \
+            /opt/deepvariant/bin/run_deepvariant \
+            {params.extra} \
+            --ref={input.ref} \
+            --output_vcf={output.vcf} \
+            --intermediate_results_dir={params.intermediate_dir} \
+            --logging_dir={params.logging_dir} &> {log}
+        """
+
+
+# bcftools ------------------------------------------------------------------------------
+
+
+rule bcftools_mpileup:
+    input:
+        alignments = f"{RECAL_OUT}/{{sample}}.bam",
+        ref = FASTA,
+        # only satisfies the wrapper's check that `regions` has an index; htslib finds
+        # <name>.bai next to the BAM itself
+        index = f"{RECAL_OUT}/{{sample}}.bai",
+        fai = FAI,
+        regions = EXONS_BED,
+    output:
+        pileup = temp(f"{BCFTOOLS_OUT}/{{sample}}.pileup.bcf"),
+    threads:
+        2
+    params:
+        uncompressed_bcf = True,
+        extra = config["bcftools"]["mpileup_extra"],
+    log:
+        f"{BCFTOOLS_OUT}/{{sample}}.mpileup.log"
+    wrapper:
+        "v9.17.1/bio/bcftools/mpileup"
+
+
+rule bcftools_call:
+    input:
+        pileup = f"{BCFTOOLS_OUT}/{{sample}}.pileup.bcf",
+    output:
+        calls = temp(f"{BCFTOOLS_OUT}/{{sample}}.calls.bcf"),
+    threads:
+        2
+    params:
+        caller = "-m",
+        uncompressed_bcf = True,
+        extra = config["bcftools"]["call_extra"],
+    log:
+        f"{BCFTOOLS_OUT}/{{sample}}.call.log"
+    wrapper:
+        "v9.17.1/bio/bcftools/call"
+
+
+rule bcftools_filter:
+    input:
+        f"{BCFTOOLS_OUT}/{{sample}}.calls.bcf",
+    output:
+        f"{BCFTOOLS_OUT}/{{sample}}.filtered.vcf.gz",
+    params:
+        filter = config["bcftools"]["filter"],
+        extra = config["bcftools"]["filter_extra"],
+    log:
+        f"{BCFTOOLS_OUT}/{{sample}}.filter.log"
+    wrapper:
+        "v9.17.1/bio/bcftools/filter"
+
+
+# PASS + normalise ------------------------------------------------------------------------
+
+
+rule pass_filter:
+    input:
+        lambda w: CALLER_VCF[w.caller].format(sample=w.sample),
+    output:
+        temp(f"{PASS_OUT}/{{caller}}/{{sample}}.unnormalized.vcf.gz"),
+    params:
+        extra = "-f PASS",
+    log:
+        f"{PASS_OUT}/{{caller}}/{{sample}}.view.log"
+    wrapper:
+        "v9.17.1/bio/bcftools/view"
+
+
+rule pass_norm:
+    input:
+        f"{PASS_OUT}/{{caller}}/{{sample}}.unnormalized.vcf.gz",
+        ref = FASTA,
+        fai = FAI,
+    output:
+        f"{PASS_OUT}/{{caller}}/{{sample}}.vcf.gz",
+        tbi = f"{PASS_OUT}/{{caller}}/{{sample}}.vcf.gz.tbi",
+    params:
+        # split multiallelics so sites match across callers in the consensus
+        extra = "-m-any --check-ref s --write-index=tbi",
+    log:
+        f"{PASS_OUT}/{{caller}}/{{sample}}.norm.log"
+    wrapper:
+        "v9.17.1/bio/bcftools/norm"
+
+
+# Consensus ---------------------------------------------------------------------------------
+
+
+# Sites PASSed by >= min_callers callers. Records come from the first caller that has
+# the site (HaplotypeCaller > DeepVariant > bcftools), reduced to GT so the three
+# callers' headers/FORMAT fields don't clash; INFO/CALLERS records which callers
+# made the call (isec bitmask in that order, e.g. "101" = HaplotypeCaller + bcftools).
+rule consensus:
+    input:
+        vcfs = expand(f"{PASS_OUT}/{{caller}}/{{{{sample}}}}.vcf.gz", caller=CALLERS),
+        tbis = expand(f"{PASS_OUT}/{{caller}}/{{{{sample}}}}.vcf.gz.tbi", caller=CALLERS),
+    output:
+        vcf = f"{CONSENSUS_OUT}/{{sample}}.vcf.gz",
+        tbi = f"{CONSENSUS_OUT}/{{sample}}.vcf.gz.tbi",
+    params:
+        isec_dir = f"{CONSENSUS_OUT}/{{sample}}_isec",
+        min_callers = config["consensus"]["min_callers"],
+        n_callers = len(CALLERS),
+    log:
+        f"{CONSENSUS_OUT}/{{sample}}.log"
+    conda:
+        "envs/bcftools.yaml"
+    shell:
+        """
+        (set -euo pipefail
+        rm -rf {params.isec_dir}
+        bcftools isec -c none -n+{params.min_callers} -Oz -p {params.isec_dir} {input.vcfs}
+
+        for i in $(seq 0 $(({params.n_callers} - 1))); do
+            f={params.isec_dir}/000$i.vcf.gz
+            bcftools annotate -x INFO -Ou $f \
+                | bcftools annotate -x ^FORMAT/GT -Oz -o {params.isec_dir}/gt$i.vcf.gz
+            bcftools index -t {params.isec_dir}/gt$i.vcf.gz
+        done
+
+        bgzip -c {params.isec_dir}/sites.txt > {params.isec_dir}/sites.tsv.gz
+        tabix -s1 -b2 -e2 {params.isec_dir}/sites.tsv.gz
+        echo '##INFO=<ID=CALLERS,Number=1,Type=String,Description="Callers that PASSed the site: bitmask over HaplotypeCaller,DeepVariant,bcftools">' \
+            > {params.isec_dir}/callers.hdr
+
+        if [ -s {params.isec_dir}/sites.txt ]; then
+            bcftools concat -a -D -Ou {params.isec_dir}/gt?.vcf.gz \
+                | bcftools sort -Ou -T {params.isec_dir}/sort \
+                | bcftools annotate -a {params.isec_dir}/sites.tsv.gz -c CHROM,POS,REF,ALT,CALLERS \
+                    -h {params.isec_dir}/callers.hdr -Oz -o {output.vcf}
+        else
+            # no consensus sites: concat would write nothing at all, so emit a header-only VCF
+            bcftools annotate -h {params.isec_dir}/callers.hdr -Oz -o {output.vcf} {params.isec_dir}/gt0.vcf.gz
+        fi
+        bcftools index -t {output.vcf}) &> {log}
+        """
+
+
+# Annotation ----------------------------------------------------------------------------------
+
+
+def callset_vcf(wildcards):
+    if wildcards.callset == "consensus":
+        return f"{CONSENSUS_OUT}/{wildcards.sample}.vcf.gz"
+    return f"{PASS_OUT}/{wildcards.callset}/{wildcards.sample}.vcf.gz"
+
+
+rule vep_annotate:
+    input:
+        calls = callset_vcf,
+        cache = VEP_CACHE_OUT,
+        plugins = VEP_PLUGINS_OUT,
+        fasta = FASTA,
+        fai = FAI,
+    output:
+        calls = f"{ANNOTATED_OUT}/{{callset}}/{{sample}}.vcf.gz",
+        stats = f"{ANNOTATED_OUT}/{{callset}}/{{sample}}.stats.html",
+    threads:
+        4
+    params:
+        plugins = config["vep"]["plugins"],
+        extra = config["vep"]["extra"],
+    log:
+        f"{ANNOTATED_OUT}/{{callset}}/{{sample}}.log"
+    wrapper:
+        "v9.17.1/bio/vep/annotate"
+
+
+rule vep_index:
+    input:
+        f"{ANNOTATED_OUT}/{{callset}}/{{sample}}.vcf.gz",
+    output:
+        f"{ANNOTATED_OUT}/{{callset}}/{{sample}}.vcf.gz.tbi",
+    log:
+        f"{ANNOTATED_OUT}/{{callset}}/{{sample}}.index.log"
+    wrapper:
+        "v9.17.1/bio/bcftools/index"
+
+
+# QC ------------------------------------------------------------------------------------------
+
+
+rule bcftools_stats:
+    input:
+        callset_vcf,
+        ref = FASTA,
+        fai = FAI,
+    output:
+        f"{STATS_OUT}/{{callset}}/{{sample}}.txt",
+    params:
+        extra = "",
+    log:
+        f"{STATS_OUT}/{{callset}}/{{sample}}.log"
+    wrapper:
+        "v9.17.1/bio/bcftools/stats"
+
+
+rule multiqc:
+    input:
+        fastp = FASTP_JSONS,
+        star = expand(f"{STAR_OUT}/{{sample}}.Log.final.out", sample=ALL_SAMPLES),
+        markdup = expand(f"{MARKDUP_OUT}/{{sample}}.metrics.txt", sample=ALL_SAMPLES),
+        mosdepth = expand(f"{MOSDEPTH_OUT}/{{sample}}.mosdepth.summary.txt", sample=ALL_SAMPLES)
+            + expand(f"{MOSDEPTH_OUT}/{{sample}}.mosdepth.global.dist.txt", sample=ALL_SAMPLES)
+            + expand(f"{MOSDEPTH_OUT}/{{sample}}.mosdepth.region.dist.txt", sample=ALL_SAMPLES),
+        bcftools_stats = expand(f"{STATS_OUT}/{{callset}}/{{sample}}.txt", callset=CALL_SETS, sample=ALL_SAMPLES),
+        vep = expand(f"{ANNOTATED_OUT}/{{callset}}/{{sample}}.stats.html", callset=CALL_SETS, sample=ALL_SAMPLES),
+        config = "multiqc_config.yaml",
+    output:
+        f"{MULTIQC_OUT}/multiqc_report.html",
+        directory(f"{MULTIQC_OUT}/multiqc_data"),
+    params:
+        extra = config["multiqc"]["extra"],
+        use_input_files_only = True,
+    log:
+        f"{MULTIQC_OUT}/multiqc.log"
+    wrapper:
+        "v9.17.1/bio/multiqc"

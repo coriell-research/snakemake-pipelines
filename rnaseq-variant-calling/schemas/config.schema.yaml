@@ -1,0 +1,132 @@
+$schema: "https://json-schema.org/draft/2020-12/schema"
+description: Schema for rnaseq-variant-calling config.yaml
+type: object
+additionalProperties: false
+required: [ref, known_sites, fastp, star, gatk, mosdepth, deepvariant, bcftools, consensus, vep, multiqc]
+
+definitions:
+  nonempty:
+    type: string
+    minLength: 1
+
+properties:
+  work_dir:
+    type: string
+    default: "results"
+
+  ref:
+    type: object
+    additionalProperties: false
+    required: [genome_url, gtf_url, fasta, gtf]
+    properties:
+      genome_url: {$ref: "#/definitions/nonempty"}
+      gtf_url: {$ref: "#/definitions/nonempty"}
+      fasta:
+        type: string
+        description: Uncompressed fasta; .fai and .dict are created next to it.
+        pattern: '\.(fa|fasta)$'
+      gtf:
+        type: string
+        description: Uncompressed GTF.
+        pattern: '\.gtf$'
+
+  known_sites:
+    type: object
+    additionalProperties: false
+    required: [gatk_bucket, dbsnp, mills, known_indels]
+    properties:
+      gatk_bucket: {$ref: "#/definitions/nonempty"}
+      dbsnp: {type: string, pattern: '\.vcf\.gz$'}
+      mills: {type: string, pattern: '\.vcf\.gz$'}
+      known_indels: {type: string, pattern: '\.vcf\.gz$'}
+
+  fastp:
+    type: object
+    additionalProperties: false
+    required: [extra]
+    properties:
+      extra: {type: string}
+
+  star:
+    type: object
+    additionalProperties: false
+    required: [index, sjdb_overhang, twopass_mode, limit_bam_sort_ram, extra]
+    properties:
+      index: {$ref: "#/definitions/nonempty"}
+      sjdb_overhang: {type: integer, minimum: 1}
+      twopass_mode: {type: string, enum: ["Basic", "None"]}
+      limit_bam_sort_ram: {type: integer, minimum: 0}
+      extra:
+        type: string
+        not:
+          description: these are set by the rule
+          pattern: '--(outSAMtype|twopassMode|outSAMattrRGline|limitBAMsortRAM|outStd|runThreadN|genomeDir|readFilesIn)\b'
+
+  gatk:
+    type: object
+    additionalProperties: false
+    required: [haplotypecaller_extra, filters, filter_extra]
+    properties:
+      haplotypecaller_extra: {type: string}
+      filters:
+        type: object
+        additionalProperties: {type: string}
+      filter_extra: {type: string}
+
+  mosdepth:
+    type: object
+    additionalProperties: false
+    required: [extra]
+    properties:
+      extra: {type: string}
+
+  deepvariant:
+    type: object
+    additionalProperties: false
+    required: [bin_version, regions, extra]
+    properties:
+      bin_version: {$ref: "#/definitions/nonempty"}
+      regions:
+        type: object
+        additionalProperties: false
+        required: [restrict, feature, min_coverage]
+        properties:
+          restrict: {type: boolean}
+          feature: {type: string, enum: ["CDS", "exon"]}
+          min_coverage: {type: integer, minimum: 1}
+      extra: {type: string}
+
+  bcftools:
+    type: object
+    additionalProperties: false
+    required: [mpileup_extra, call_extra, filter, filter_extra]
+    properties:
+      mpileup_extra: {type: string}
+      call_extra: {type: string}
+      filter: {type: string}
+      filter_extra: {type: string}
+
+  consensus:
+    type: object
+    additionalProperties: false
+    required: [min_callers]
+    properties:
+      min_callers: {type: integer, minimum: 1, maximum: 3}
+
+  vep:
+    type: object
+    additionalProperties: false
+    required: [species, build, release, plugins, extra]
+    properties:
+      species: {$ref: "#/definitions/nonempty"}
+      build: {$ref: "#/definitions/nonempty"}
+      release: {type: integer}
+      plugins: {type: array, items: {type: string}}
+      extra: {type: string}
+
+  multiqc:
+    type: object
+    additionalProperties: false
+    required: [extra]
+    properties:
+      extra: {type: string}

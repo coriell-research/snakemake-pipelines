@@ -1,0 +1,5 @@
+# Name fastp samples after the per-lane report file ({lane}.fastp.json; with --dirs this
+# gives "<sample> | <lane>") rather than the read 1 FASTQ name, so lanes of a sample whose
+# FASTQs share a basename don't overwrite each other.
+use_filename_as_sample_name:
+  - fastp

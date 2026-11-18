@@ -1,0 +1,33 @@
+$schema: "https://json-schema.org/draft/2020-12/schema"
+description: >-
+  One row of samples.csv - a single sequencing lane belonging to a sample.
+  See the "Input" section of README.md for the full column definitions.
+type: object
+properties:
+  sample:
+    type: string
+    description: >-
+      Sample ID. Unique per biological sample; shared across all lanes
+      belonging to that sample (so they get merged). Used as the read group
+      SM tag, so no whitespace, commas or slashes.
+    pattern: '^[^\s,/]+$'
+  lane:
+    type: string
+    description: >-
+      Lane ID. Must be unique within a sample (not necessarily globally).
+      Used in the read group ID/PU tags, so no whitespace, commas or slashes.
+    pattern: '^[^\s,/]+$'
+  read1:
+    type: string
+    description: Full path to the gzipped read 1 FASTQ file.
+    pattern: '.*\.(fastq|fq)\.gz$'
+  read2:
+    type: string
+    description: Full path to the gzipped read 2 FASTQ file.
+    pattern: '.*\.(fastq|fq)\.gz$'
+required:
+  - sample
+  - lane
+  - read1
+  - read2
+additionalProperties: false

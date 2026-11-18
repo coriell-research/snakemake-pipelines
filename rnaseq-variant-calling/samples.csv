@@ -1,0 +1,3 @@
+sample,lane,read1,read2
+RP1,L1,/home/gennaro/data/projects/20251103_mikel-mcf7-random_prime-rnaseq/data/00_fastq/RP1_1.fq.gz,/home/gennaro/data/projects/20251103_mikel-mcf7-random_prime-rnaseq/data/00_fastq/RP1_2.fq.gz
+RP10,L1,/home/gennaro/data/projects/20251103_mikel-mcf7-random_prime-rnaseq/data/00_fastq/RP10_1.fq.gz,/home/gennaro/data/projects/20251103_mikel-mcf7-random_prime-rnaseq/data/00_fastq/RP10_2.fq.gz

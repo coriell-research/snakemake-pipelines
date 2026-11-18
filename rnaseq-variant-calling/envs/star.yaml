@@ -1,0 +1,10 @@
+# Overrides the star/index and star/align wrapper envs. Bioconda STAR 2.7.11b builds >= 7
+# (h5ca1c30_7 onwards) are compiled with -march=x86-64-v3 (AVX2) and die with "Illegal
+# instruction" on CPUs without AVX2 (e.g. our Xeon E5-4657L v2). Build 6 predates that change.
+# The same STAR build must be used to build the index and to align against it.
+channels:
+  - conda-forge
+  - bioconda
+  - nodefaults
+dependencies:
+  - star=2.7.11b=h5ca1c30_6

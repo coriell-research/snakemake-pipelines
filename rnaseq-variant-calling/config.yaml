@@ -1,0 +1,88 @@
+work_dir: "results"
+
+ref:
+  # GENCODE v48 primary assembly (chr1-22, X, Y, M + unplaced scaffolds; no ALT/HLA/decoy
+  # contigs) and its matching annotation. Both are downloaded into resources/ by the
+  # download_resource rule and decompressed to the `fasta`/`gtf` paths below; the .fai and
+  # .dict are generated next to the fasta. To reuse local copies instead, symlink them into
+  # resources/ under these names (see README).
+  genome_url: "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_48/GRCh38.primary_assembly.genome.fa.gz"
+  gtf_url: "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_48/gencode.v48.primary_assembly.annotation.gtf.gz"
+  fasta: "resources/GRCh38.primary_assembly.genome.fa"
+  gtf: "resources/gencode.v48.primary_assembly.annotation.gtf"
+
+known_sites:
+  # GATK hg38 resource bundle. chr1-22/X/Y/M names and lengths match the GENCODE assembly;
+  # the extra contigs in these VCF headers are ignored by GATK.
+  gatk_bucket: "https://storage.googleapis.com/gcp-public-data--broad-references/hg38/v0"
+  dbsnp: "resources/Homo_sapiens_assembly38.dbsnp138.vcf.gz"
+  mills: "resources/Mills_and_1000G_gold_standard.indels.hg38.vcf.gz"
+  known_indels: "resources/Homo_sapiens_assembly38.known_indels.vcf.gz"
+
+fastp:
+  extra: "--detect_adapter_for_pe"
+
+star:
+  # Built from ref.fasta + ref.gtf if missing. Point this at an existing index built from the
+  # same fasta/GTF with STAR 2.7.11b to skip the build.
+  index: "resources/star_index"
+  sjdb_overhang: 149
+  # "Basic" (GATK best practice) or "None"
+  twopass_mode: "Basic"
+  # bytes; RAM for BAM sorting on top of the ~32 GB genome
+  limit_bam_sort_ram: 20000000000
+  # --outSAMtype, --twopassMode, --outSAMattrRGline and --limitBAMsortRAM are set in the rule
+  extra: "--outSAMattributes NH HI AS nM NM MD --outSAMunmapped Within"
+
+gatk:
+  haplotypecaller_extra: "--dont-use-soft-clipped-bases --standard-min-confidence-threshold-for-calling 20"
+  # VariantFiltration hard filters (GATK RNA-seq best practice): {filter name: JEXL expression}
+  filters:
+    FS: "FS > 30.0"
+    QD: "QD < 2.0"
+  # adds the SnpCluster filter (3 SNPs within 35 bp)
+  filter_extra: "--window 35 --cluster 3"
+
+mosdepth:
+  extra: ""
+
+deepvariant:
+  # https://github.com/google/deepvariant - run via singularity (container only)
+  bin_version: "1.10.0"
+  regions:
+    # Restrict calling to annotation `feature` ("CDS" or "exon") bases covered by at least
+    # `min_coverage` reads in that sample (as in the DeepVariant RNA-seq case study).
+    # restrict: false calls genome-wide (much slower).
+    restrict: true
+    feature: "CDS"
+    min_coverage: 3
+  extra: "--disable_small_model"
+
+bcftools:
+  # -d/-L default to 250, far too low for RNA-seq. Spliced reads are handled internally; the
+  # recalibrated BAM is used so STAR's MAPQ 255 has already been reset to 60.
+  mpileup_extra: "-a FORMAT/AD,FORMAT/ADF,FORMAT/ADR,FORMAT/DP,FORMAT/SP,INFO/AD -d 10000 -L 10000 -q 20 -Q 20"
+  call_extra: "-v -f GQ"
+  # soft filter: failing records get FILTER=LowQual, the rest PASS
+  filter: "-s LowQual -e 'QUAL<20 || INFO/DP<10 || FMT/GQ<20'"
+  # also flags SNPs within 3 bp of an indel (FILTER=SnpGap)
+  filter_extra: "-g 3"
+
+consensus:
+  # Minimum number of callers (of HaplotypeCaller, DeepVariant, bcftools) that must PASS a
+  # site for it to be kept in the consensus VCF.
+  min_callers: 2
+
+vep:
+  # Cache downloaded automatically via the bio/vep/cache wrapper; the release must match the
+  # wrapper's ensembl-vep (116).
+  species: "homo_sapiens"
+  build: "GRCh38"
+  release: 116
+  plugins: []
+  extra: "--everything"
+
+multiqc:
+  # --dirs keeps per-caller bcftools/VEP stats for the same sample from overwriting each other
+  # (multiqc_config.yaml is always passed as well)
+  extra: "--dirs --dirs-depth 1"

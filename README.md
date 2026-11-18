@@ -16,6 +16,7 @@
 - De novo transcript assembly and quantification
 - Estimation of bacterial read abundance from sequencing data using Kraken2 and Braken
 - Somatic variant calling from WES/WGS data (work-in-progress)
+- Germline variant calling from paired-end RNA-seq data (GATK best practices + DeepVariant + bcftools, work-in-progress)
 
 ## Caveats
 
