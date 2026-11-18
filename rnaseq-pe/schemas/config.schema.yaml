@@ -8,6 +8,7 @@ required:
   - salmon
   - rustqc
   - mosdepth
+  - tetranscripts
 properties:
   work_dir:
     type: string
@@ -87,5 +88,31 @@ properties:
       include_flag:
         type: integer
         minimum: 0
+      extra_params:
+        type: string
+
+  tetranscripts:
+    type: object
+    additionalProperties: false
+    required: [image, sif, gtf, te, stranded, mode, extra_params]
+    properties:
+      image:
+        type: string
+        minLength: 1
+      sif:
+        type: string
+        pattern: "\\.sif$"
+      gtf:
+        type: string
+        pattern: "\\.(gtf|ind)$"
+      te:
+        type: string
+        pattern: "\\.(gtf|ind)$"
+      stranded:
+        type: string
+        enum: ["no", "forward", "reverse"]
+      mode:
+        type: string
+        enum: ["multi", "uniq"]
       extra_params:
         type: string

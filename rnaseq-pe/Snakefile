@@ -36,6 +36,7 @@ STAR_OUT = f"{WORK_DIR}/star"
 SALMON_OUT = f"{WORK_DIR}/salmon"
 MOSDEPTH_OUT = f"{WORK_DIR}/mosdepth"
 RUSTQC_OUT = f"{WORK_DIR}/rustqc"
+TETRANSCRIPTS_OUT = f"{WORK_DIR}/tetranscripts"
 MULTIQC_OUT = f"{WORK_DIR}/multiqc"
 LOG_DIR = f"{WORK_DIR}/logs"
 
@@ -52,7 +53,8 @@ def fastp_input(lane_paths, mate):
 
 rule all:
     input:
-        f"{MULTIQC_OUT}/multiqc_report.html"
+        f"{MULTIQC_OUT}/multiqc_report.html",
+        expand(f"{TETRANSCRIPTS_OUT}/{{sample}}.cntTable", sample=SAMPLES_LIST)
 
 
 rule merge_lanes:
@@ -235,6 +237,60 @@ rule rustqc:
           --biotype-attribute {params.biotype} \
           --threads {threads} \
           --outdir {params.outdir} &> {log}
+        """
+
+
+# TEcount (TEtranscripts) - only published as a container, so it is run via singularity.
+# The image is pulled once to config["tetranscripts"]["sif"] and reused by every sample.
+rule pull_tetranscripts:
+    output:
+        sif = config["tetranscripts"]["sif"]
+    params:
+        image = config["tetranscripts"]["image"]
+    log:
+        f"{LOG_DIR}/tetranscripts/pull_tetranscripts.log"
+    shell:
+        "singularity pull --force {output.sif} {params.image} &> {log}"
+
+
+# realpath so symlinked reference/results directories are bound at their real location
+TETRANSCRIPTS_BIND_PATHS = sorted({
+    os.path.realpath(WORK_DIR),
+    os.path.dirname(os.path.realpath(config["tetranscripts"]["gtf"])),
+    os.path.dirname(os.path.realpath(config["tetranscripts"]["te"])),
+})
+
+
+# --sortByPos is required for STAR's coordinate-sorted BAM: TEcount then name-sorts a copy
+# of the BAM into its *current working directory*, so each sample runs from its own scratch
+# directory (removed on success) instead of the shared pipeline directory.
+rule tecount:
+    input:
+        sif = config["tetranscripts"]["sif"],
+        bam = f"{STAR_OUT}/{{sample}}.Aligned.sortedByCoord.out.bam",
+        gtf = config["tetranscripts"]["gtf"],
+        te = config["tetranscripts"]["te"]
+    output:
+        cnt = f"{TETRANSCRIPTS_OUT}/{{sample}}.cntTable"
+    params:
+        bind = " ".join(f"-B {p}" for p in TETRANSCRIPTS_BIND_PATHS),
+        stranded = config["tetranscripts"]["stranded"],
+        mode = config["tetranscripts"]["mode"],
+        extra = config["tetranscripts"]["extra_params"],
+        outdir = TETRANSCRIPTS_OUT,
+        scratch = f"{TETRANSCRIPTS_OUT}/{{sample}}.tmp"
+    log:
+        f"{LOG_DIR}/tetranscripts/{{sample}}.log"
+    threads:
+        1
+    shell:
+        """
+        rm -rf {params.scratch}
+        mkdir -p {params.scratch} {params.outdir}
+
+        singularity exec --cleanenv --no-home           --pwd $(realpath {params.scratch}) {params.bind}           {input.sif}           TEcount             -b $(realpath {input.bam})             --GTF $(realpath {input.gtf})             --TE $(realpath {input.te})             --format BAM             --sortByPos             --stranded {params.stranded}             --mode {params.mode}             --project {wildcards.sample}             --outdir $(realpath {params.outdir})             {params.extra} &> {log}
+
+        rm -rf {params.scratch}
         """
 
 

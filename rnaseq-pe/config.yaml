@@ -43,3 +43,16 @@ mosdepth:
   window_size: 500
   extra_params: "--fast-mode"
   include_flag: 3
+
+tetranscripts:
+  # https://github.com/mhammell-laboratory/TEtranscripts - TEcount is run via singularity
+  # (container only). The image is pulled once to `sif` (rule pull_tetranscripts) unless it
+  # already exists there; point `sif` at a shared, pre-pulled image to skip the pull.
+  image: "docker://mhammelllab/tetranscripts:latest"
+  sif: "containers/tetranscripts.sif"
+  # pre-built indexes (.ind) load much faster than building from .gtf; either is accepted
+  gtf: "/mnt/data/references/GRCh38/TEtranscripts/gencode.v48.chr_patch_hapl_scaff.annotation.gtf.ind"
+  te: "/mnt/data/references/GRCh38/TEtranscripts/GRCh38_GENCODE_rmsk_TE.gtf.ind"
+  stranded: "reverse"   # no | forward | reverse (TruSeq stranded = reverse)
+  mode: "multi"         # multi (EM over multi-mappers) | uniq (unique mappers only)
+  extra_params: ""

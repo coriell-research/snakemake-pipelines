@@ -5,7 +5,10 @@ This a simple snakemake pipeline for aligning and performing QC on paired-end RN
 The pipeline assumes that you are running it on Coriell's server, meaning paths to pre-generated 
 genome indeces are available. Each rule resolves its own tool (`fastp`, `STAR`, `Salmon`, 
 `mosdepth`, `rustqc`, `MultiQC`) via a pinned conda environment in `envs/`, built automatically 
-by Snakemake when run with `--use-conda`.
+by Snakemake when run with `--use-conda`. The exception is `TEcount` (TEtranscripts), which is only 
+published as a container and is run via `singularity`, so `singularity` must be on `PATH`. The image is
+pulled automatically on first run to `tetranscripts.sif` in config.yaml (set it to an existing `.sif`
+to reuse a pre-pulled image).
 
 ### Usage
 
@@ -33,5 +36,7 @@ changed via `work_dir` in config.yaml).
 2. [STAR](https://github.com/alexdobin/STAR) 2-PASS alignment + GeneCounts
 3. [Salmon](https://salmon.readthedocs.io/en/latest/salmon.html) quant with 100 Gibbs samples
 4. [RustQC](https://seqeralabs.github.io/RustQC/) for RNA-seq quality control
-5. [MultiQC](https://github.com/MultiQC/MultiQC) to aggregate pipeline results across samples
+5. [TEtranscripts](https://github.com/mhammell-laboratory/TEtranscripts) `TEcount` gene + transposable
+element quantification (multi-mapper EM mode) from the STAR BAM, written to `tetranscripts/<sample>.cntTable`
+6. [MultiQC](https://github.com/MultiQC/MultiQC) to aggregate pipeline results across samples
     
