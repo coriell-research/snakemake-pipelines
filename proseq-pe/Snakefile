@@ -1,0 +1,874 @@
+import json
+import os
+import re
+import numpy as np
+import pandas as pd
+from snakemake.exceptions import WorkflowError
+from snakemake.utils import validate
+
+configfile: "config.yaml"
+validate(config, "schemas/config.schema.yaml")
+
+
+# dtype=str/keep_default_na=False: keep names like "01", "1" or "NA" as the strings the schema expects
+LANES = pd.read_csv("samples.csv", sep=",", dtype=str, keep_default_na=False)
+validate(LANES, "schemas/samples.schema.yaml")
+
+LANE_KEY_COLS = ["sample_name", "read1", "read2"]
+if LANES.duplicated(subset=LANE_KEY_COLS).any():
+    dupes = LANES.loc[LANES.duplicated(subset=LANE_KEY_COLS), LANE_KEY_COLS].to_dict("records")
+    raise WorkflowError(
+        f"Duplicate lane entries in samples.csv (identical sample_name/read1/read2): {dupes}"
+    )
+
+for _, row in LANES.iterrows():
+    for col in ("read1", "read2"):
+        if not os.path.isfile(row[col]):
+            raise WorkflowError(f"{col} for sample '{row['sample_name']}' not found: {row[col]}")
+
+# one or more rows per sample_name are allowed (one row per lane); lanes are
+# merged per-sample by rule merge_lanes before any trimming/alignment happens.
+# samples with only one lane skip merge_lanes entirely (see raw_input below).
+SAMPLES_LIST = LANES["sample_name"].drop_duplicates().tolist()
+LANE_R1 = LANES.groupby("sample_name")["read1"].apply(list).to_dict()
+LANE_R2 = LANES.groupby("sample_name")["read2"].apply(list).to_dict()
+
+# Optional `group` column (e.g. condition): per-group replicate-averaged bigWigs
+GROUPS = {}
+if "group" in LANES.columns:
+    n_groups = LANES.groupby("sample_name")["group"].nunique()
+    if (n_groups > 1).any():
+        raise WorkflowError(
+            "All lanes of a sample must have the same group in samples.csv: "
+            f"{n_groups[n_groups > 1].index.tolist()}"
+        )
+    sample_group = LANES.drop_duplicates("sample_name").set_index("sample_name")["group"]
+    GROUPS = {g: s.index.tolist() for g, s in sample_group.groupby(sample_group, sort=False)}
+
+# Combined host + dm6_ + rDNA bowtie2 index, built by generate-resources
+BOWTIE2_EXTS = (".1.bt2", ".2.bt2", ".3.bt2", ".4.bt2", ".rev.1.bt2", ".rev.2.bt2")
+BOWTIE2_INDEX = config["bowtie2"]["index"]
+if not os.path.isfile(BOWTIE2_INDEX + ".1.bt2"):
+    raise WorkflowError(
+        f"bowtie2.index '{BOWTIE2_INDEX}' is not a bowtie2 index prefix (no {BOWTIE2_INDEX}.1.bt2). "
+        "Build the host + dm6 + rDNA index with generate-resources (rule bowtie2_dm6_rdna_index)"
+    )
+if not os.path.isfile(config["annotation_gtf"]):
+    raise WorkflowError(
+        f"annotation_gtf '{config['annotation_gtf']}' not found. Build it with generate-resources "
+        "(rule combine_gtf_with_dm6)"
+    )
+
+SPIKE_PREFIX = config["spike_prefix"]
+SPIKE_EXCLUDE = config["spikein_exclude_contigs"]
+RDNA_CONTIGS = config["rdna_contigs"]
+HOST_REGEX = config["host_contig_regex"]
+MITO_CONTIG = config["mito_contig"]
+MIN_MAPQ = config["filter"]["min_mapq"]
+
+# UMIs are optional. With UMIs, umi_tools removes PCR duplicates (position + UMI). Without them,
+# duplicates are always marked and only removed when filter.remove_duplicates is true.
+UMI = config.get("umi") or {}
+UMI_ENABLED = bool(UMI.get("enabled", False))
+REMOVE_DUPS = (not UMI_ENABLED) and config["filter"]["remove_duplicates"]
+# -F 780: unmapped, mate unmapped, secondary, QC-fail; 1804 also excludes duplicates
+DUP_FLAGS = 1804 if REMOVE_DUPS else 780
+
+# Spike-in normalization is optional: active when a `spikein` block is present in
+# config.yaml and `enabled` is not false.
+SPIKEIN = config.get("spikein") or {}
+SPIKEIN_ENABLED = bool(SPIKEIN) and SPIKEIN.get("enabled", True)
+# raw = unscaled counts (Danko proseq2.0 / dREG input)
+NORMS = ["raw", "depth", "cpm"] + (["spikein"] if SPIKEIN_ENABLED else [])
+
+PRESEQ_ENABLED = (config.get("preseq") or {}).get("enabled", True)
+WINDOWS = config["windows"]
+
+# samtools filter expressions (contig names are validated to contain no quotes)
+HOST_EXPR = f'rname =~ "{HOST_REGEX}"'
+SPIKE_EXPR = " && ".join([f'rname =~ "^{SPIKE_PREFIX}"'] + [f'rname != "{c}"' for c in SPIKE_EXCLUDE])
+RDNA_EXPR = " || ".join(f'rname == "{c}"' for c in RDNA_CONTIGS)
+MITO_EXPR = f'rname == "{MITO_CONTIG}"'
+
+WORK_DIR = config.get("work_dir", "results")
+MERGED_OUT = f"{WORK_DIR}/merged"
+UMI_OUT = f"{WORK_DIR}/umi"
+FASTP_OUT = f"{WORK_DIR}/fastp"
+ALIGN_OUT = f"{WORK_DIR}/align"
+BAM_OUT = f"{WORK_DIR}/bam"
+ANNOT_OUT = f"{WORK_DIR}/annotation"
+COUNTS_OUT = f"{WORK_DIR}/counts"
+SIZEFACTOR_OUT = f"{WORK_DIR}/size_factors"
+BIGWIG_OUT = f"{WORK_DIR}/bigwig"
+PRESEQ_OUT = f"{WORK_DIR}/preseq"
+MULTIQC_OUT = f"{WORK_DIR}/multiqc"
+LOG_DIR = f"{WORK_DIR}/logs"
+
+STRANDS = ["plus", "minus"]
+
+wildcard_constraints:
+    sample = "|".join(re.escape(s) for s in SAMPLES_LIST),
+    norm = "|".join(["raw", "depth", "cpm", "spikein"]),
+    strand = "|".join(STRANDS),
+    window = "tss|pause",
+    group = "|".join(re.escape(g) for g in GROUPS) or "^$"
+
+
+def raw_input(lane_paths, mate):
+    """Raw (single lane) or lane-merged FASTQ for a sample."""
+    def _input(wildcards):
+        sample_lanes = lane_paths[wildcards.sample]
+        if len(sample_lanes) == 1:
+            return sample_lanes[0]
+        return f"{MERGED_OUT}/{wildcards.sample}.merged.{mate}.fq.gz"
+
+    return _input
+
+
+def fastp_input(wildcards):
+    if UMI_ENABLED:
+        return [f"{UMI_OUT}/{wildcards.sample}.umi.{mate}.fq.gz" for mate in (1, 2)]
+    return [raw_input(LANE_R1, 1)(wildcards), raw_input(LANE_R2, 2)(wildcards)]
+
+
+def all_outputs():
+    outputs = [
+        f"{MULTIQC_OUT}/multiqc_report.html",
+        f"{SIZEFACTOR_OUT}/size_factors.tsv",
+        f"{COUNTS_OUT}/pause_index.tsv",
+        f"{ANNOT_OUT}/dominant_tss.bed",
+        expand(f"{BIGWIG_OUT}/{{sample}}.{{norm}}.{{strand}}.bw",
+               sample=SAMPLES_LIST, norm=NORMS, strand=STRANDS),
+    ]
+    if GROUPS:
+        outputs.append(expand(f"{BIGWIG_OUT}/group/{{group}}.{{norm}}.{{strand}}.bw",
+                              group=list(GROUPS), norm=NORMS, strand=STRANDS))
+    return outputs
+
+
+rule all:
+    input:
+        all_outputs()
+
+
+rule merge_lanes:
+    input:
+        r1 = lambda w: LANE_R1[w.sample],
+        r2 = lambda w: LANE_R2[w.sample]
+    output:
+        r1_out = temp(f"{MERGED_OUT}/{{sample}}.merged.1.fq.gz"),
+        r2_out = temp(f"{MERGED_OUT}/{{sample}}.merged.2.fq.gz")
+    log:
+        f"{LOG_DIR}/merge_lanes/{{sample}}.log"
+    shell:
+        """
+        cat {input.r1} > {output.r1_out} 2> {log}
+        cat {input.r2} > {output.r2_out} 2>> {log}
+        """
+
+
+if UMI_ENABLED:
+    rule umi_extract:
+        # UMIs sit at the 5' end of each read (3' adapter UMI on R1, 5' adapter UMI on R2, as in
+        # the Harvard NTC dual-UMI design). They are moved into the read name ("<name>_<UMI>").
+        # The mate's UMI that a short insert reads through into is removed later by fastp's
+        # paired-end overlap trimming.
+        input:
+            r1 = raw_input(LANE_R1, 1),
+            r2 = raw_input(LANE_R2, 2)
+        output:
+            r1_out = temp(f"{UMI_OUT}/{{sample}}.umi.1.fq.gz"),
+            r2_out = temp(f"{UMI_OUT}/{{sample}}.umi.2.fq.gz")
+        log:
+            f"{LOG_DIR}/umi_extract/{{sample}}.log"
+        params:
+            pattern1 = "N" * UMI.get("r1_length", 6),
+            pattern2 = "N" * UMI.get("r2_length", 6)
+        conda:
+            "envs/umi_tools.yaml"
+        shell:
+            """
+            umi_tools extract \
+                --extract-method=string \
+                --bc-pattern={params.pattern1} \
+                --bc-pattern2={params.pattern2} \
+                -I {input.r1} --read2-in {input.r2} \
+                -S {output.r1_out} --read2-out {output.r2_out} \
+                -L {log}
+            """
+
+
+rule fastp:
+    # Adapters and minimum length in fastp.extra_params. No global --trim_tail: fastp applies it
+    # before adapter removal, so it would cut adapter or insert instead of read-through. Paired-end
+    # overlap trimming removes read-through (and the mate's UMI) exactly.
+    input:
+        sample = fastp_input
+    output:
+        trimmed = [
+            temp(f"{FASTP_OUT}/{{sample}}.trimmed.1.fq.gz"),
+            temp(f"{FASTP_OUT}/{{sample}}.trimmed.2.fq.gz"),
+        ],
+        html = f"{FASTP_OUT}/{{sample}}.fastp.html",
+        json = f"{FASTP_OUT}/{{sample}}.fastp.json"
+    log:
+        f"{LOG_DIR}/fastp/{{sample}}.log"
+    params:
+        extra = lambda w: f"{config['fastp']['extra_params']} --report_title {w.sample}"
+    threads:
+        config.get("fastp", {}).get("threads", 8)
+    wrapper:
+        "v9.17.1/bio/fastp"
+
+
+rule bowtie2:
+    # Single alignment to the combined host + dm6_ + rDNA index; unsorted output (name-grouped
+    # pairs). The log (alignment summary) is read by MultiQC.
+    priority: 50
+    input:
+        sample = [
+            f"{FASTP_OUT}/{{sample}}.trimmed.1.fq.gz",
+            f"{FASTP_OUT}/{{sample}}.trimmed.2.fq.gz",
+        ],
+        idx = multiext(BOWTIE2_INDEX, *BOWTIE2_EXTS)
+    output:
+        temp(f"{ALIGN_OUT}/{{sample}}.bam")
+    log:
+        f"{LOG_DIR}/bowtie2/{{sample}}.log"
+    params:
+        extra = config["bowtie2"]["extra_params"]
+    threads:
+        max(2, config.get("bowtie2", {}).get("threads", 12))
+    wrapper:
+        "v9.17.1/bio/bowtie2/align"
+
+
+if UMI_ENABLED:
+    rule umi_dedup:
+        # Proper pairs, primary alignments, coordinate sorted; then umi_tools removes PCR
+        # duplicates by position + UMI (directional method), as the Harvard NTC does. The
+        # pre-dedup BAM is kept (temp) for preseq.
+        input:
+            bam = f"{ALIGN_OUT}/{{sample}}.bam"
+        output:
+            bam = f"{BAM_OUT}/{{sample}}.bam",
+            csi = f"{BAM_OUT}/{{sample}}.bam.csi",
+            predup = temp(f"{BAM_OUT}/predup/{{sample}}.bam"),
+            predup_csi = temp(f"{BAM_OUT}/predup/{{sample}}.bam.csi")
+        log:
+            umi = f"{LOG_DIR}/umi_dedup/{{sample}}.log",
+            samtools = f"{LOG_DIR}/umi_dedup/{{sample}}.samtools.log"
+        params:
+            sort_mem = "4G",
+            tmp_bam = lambda w: f"{BAM_OUT}/predup/{w.sample}.dedup.unsorted.bam"
+        threads:
+            config.get("samtools", {}).get("threads", 4)
+        conda:
+            "envs/umi_tools.yaml"
+        shell:
+            """
+            samtools view -u -f 2 -F 2304 -@ {threads} {input.bam} 2> {log.samtools} | \
+            samtools sort -@ {threads} -m {params.sort_mem} --write-index \
+                -o {output.predup}##idx##{output.predup_csi} - 2>> {log.samtools}
+            umi_tools dedup --paired -I {output.predup} -S {params.tmp_bam} -L {log.umi}
+            samtools sort -@ {threads} -m {params.sort_mem} --write-index \
+                -o {output.bam}##idx##{output.csi} {params.tmp_bam} 2>> {log.samtools}
+            rm {params.tmp_bam}
+            """
+else:
+    rule markdup:
+        # Proper pairs, primary alignments; duplicates are marked, not removed (see
+        # filter.remove_duplicates). bowtie2 output is name-grouped, so no collate is needed.
+        # No MAPQ filter here: rDNA reads are counted at any MAPQ (they multimap between
+        # rDNA_U13369 and the rDNA-bearing GRCh38 scaffolds).
+        input:
+            bam = f"{ALIGN_OUT}/{{sample}}.bam"
+        output:
+            bam = f"{BAM_OUT}/{{sample}}.bam",
+            csi = f"{BAM_OUT}/{{sample}}.bam.csi",
+            stats = f"{BAM_OUT}/{{sample}}.markdup.stats.txt"
+        log:
+            f"{LOG_DIR}/markdup/{{sample}}.log"
+        params:
+            sort_mem = "4G"
+        threads:
+            config.get("samtools", {}).get("threads", 4)
+        conda:
+            "envs/samtools.yaml"
+        shell:
+            """
+            samtools view -u -f 2 -F 2304 -@ {threads} {input.bam} 2> {log} | \
+            samtools fixmate -m -u -@ {threads} - - 2>> {log} | \
+            samtools sort -u -@ {threads} -m {params.sort_mem} - 2>> {log} | \
+            samtools markdup --write-index -f {output.stats} -@ {threads} - {output.bam}##idx##{output.csi} 2>> {log}
+            """
+
+
+rule split:
+    # Host R1-only BAM (the input to all counting and tracks) and per-sample fragment counts.
+    # R1 starts at the RNA 3' end (Pol II active site), so one R1 = one nascent RNA fragment.
+    input:
+        bam = f"{BAM_OUT}/{{sample}}.bam",
+        csi = f"{BAM_OUT}/{{sample}}.bam.csi"
+    output:
+        bam = f"{BAM_OUT}/r1/{{sample}}.bam",
+        bai = f"{BAM_OUT}/r1/{{sample}}.bam.bai",
+        fragments = f"{BAM_OUT}/{{sample}}.fragments.tsv"
+    log:
+        f"{LOG_DIR}/split/{{sample}}.log"
+    params:
+        min_mapq = MIN_MAPQ,
+        dup_flags = DUP_FLAGS,
+        host = HOST_EXPR,
+        spike = SPIKE_EXPR,
+        rdna = RDNA_EXPR,
+        mito = MITO_EXPR,
+        rdna_check = RDNA_CONTIGS[0]
+    threads:
+        config.get("samtools", {}).get("threads", 4)
+    conda:
+        "envs/samtools.yaml"
+    shell:
+        """
+        if ! samtools view -H {input.bam} | awk -F '\\t' -v c={params.rdna_check} \
+            '$1 == "@SQ" && $2 == "SN:" c {{ found = 1 }} END {{ exit !found }}'; then
+            echo "Contig {params.rdna_check} is not in the BAM header: bowtie2.index is not the" \
+                "host + dm6 + rDNA index (generate-resources rule bowtie2_dm6_rdna_index)" | tee {log} >&2
+            exit 1
+        fi
+        samtools view -b -f 66 -F {params.dup_flags} -q {params.min_mapq} -e '{params.host}' \
+            -@ {threads} -o {output.bam} {input.bam} 2> {log}
+        samtools index -@ {threads} {output.bam} 2>> {log}
+        total=$(samtools view -c -f 66 -F 780 -@ {threads} {input.bam} 2>> {log})
+        host=$(samtools view -c -@ {threads} {output.bam} 2>> {log})
+        spike=$(samtools view -c -f 66 -F {params.dup_flags} -q {params.min_mapq} \
+            -e '{params.spike}' -@ {threads} {input.bam} 2>> {log})
+        rdna=$(samtools view -c -f 66 -F 780 -e '{params.rdna}' -@ {threads} {input.bam} 2>> {log})
+        mito=$(samtools view -c -f 66 -F {params.dup_flags} -q {params.min_mapq} \
+            -e '{params.mito}' -@ {threads} {input.bam} 2>> {log})
+        printf "sample\\ttotal_mapped\\thost\\tspikein\\trdna\\tchrM\\n%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n" \
+            {wildcards.sample} "$total" "$host" "$spike" "$rdna" "$mito" > {output.fragments}
+        """
+
+
+def preseq_source(wildcards):
+    # duplicates must still be present: the markdup BAM (marked only) or the pre-dedup UMI BAM
+    if UMI_ENABLED:
+        return f"{BAM_OUT}/predup/{wildcards.sample}.bam"
+    return f"{BAM_OUT}/{wildcards.sample}.bam"
+
+
+rule preseq_bam:
+    # Host R1 positions with duplicates kept, for library complexity
+    input:
+        preseq_source
+    output:
+        temp(f"{BAM_OUT}/preseq/{{sample}}.bam")
+    log:
+        f"{LOG_DIR}/preseq_bam/{{sample}}.log"
+    params:
+        min_mapq = MIN_MAPQ,
+        host = HOST_EXPR
+    threads:
+        config.get("samtools", {}).get("threads", 4)
+    conda:
+        "envs/samtools.yaml"
+    shell:
+        """
+        samtools view -b -f 66 -F 780 -q {params.min_mapq} -e '{params.host}' \
+            -@ {threads} -o {output} {input} 2> {log}
+        """
+
+
+rule preseq:
+    # Library complexity curve (MultiQC). preseq aborts on small or very low-complexity
+    # libraries; that is logged and an empty curve written instead of failing the run.
+    input:
+        f"{BAM_OUT}/preseq/{{sample}}.bam"
+    output:
+        f"{PRESEQ_OUT}/{{sample}}.ccurve.txt"
+    log:
+        f"{LOG_DIR}/preseq/{{sample}}.log"
+    conda:
+        "envs/preseq.yaml"
+    shell:
+        """
+        if ! preseq lc_extrap -B -seed 1 -o {output} {input} &> {log}; then
+            echo "preseq lc_extrap failed (see above); writing an empty curve" >> {log}
+            : > {output}
+        fi
+        """
+
+
+def read_gtf_transcripts(path, host_regex, gene_types):
+    """Host transcripts (GENCODE GTF) on contigs matching host_regex with gene_type in gene_types."""
+    cols = ["chrom", "source", "feature", "start", "end", "score", "strand", "frame", "attributes"]
+    gtf = pd.read_csv(path, sep="\t", comment="#", header=None, names=cols, dtype={"chrom": str},
+                      usecols=["chrom", "feature", "start", "end", "strand", "attributes"])
+    gtf = gtf[(gtf["feature"] == "transcript") & gtf["chrom"].str.contains(host_regex, regex=True)]
+    attrs = gtf["attributes"]
+    tx = pd.DataFrame({
+        "transcript_id": attrs.str.extract(r'transcript_id "([^"]+)"', expand=False),
+        "gene_id": attrs.str.extract(r'gene_id "([^"]+)"', expand=False),
+        "gene_name": attrs.str.extract(r'gene_name "([^"]+)"', expand=False).fillna(""),
+        "gene_type": attrs.str.extract(r'gene_type "([^"]+)"', expand=False),
+        "chrom": gtf["chrom"],
+        "start": gtf["start"],
+        "end": gtf["end"],
+        "strand": gtf["strand"],
+    })
+    tx = tx[tx["gene_type"].isin(gene_types)].drop(columns="gene_type")
+    plus = tx["strand"] == "+"
+    tx["tss"] = np.where(plus, tx["start"], tx["end"])
+    tx["tes"] = np.where(plus, tx["end"], tx["start"])
+    tx["span"] = tx["end"] - tx["start"] + 1
+    return tx.drop(columns=["start", "end"]).drop_duplicates("transcript_id").reset_index(drop=True)
+
+
+def tss_window_saf(tx, window):
+    """Strand-aware SAF (1-based, inclusive) for [window[0], window[1]] relative to the TSS."""
+    lo, hi = window
+    plus = tx["strand"] == "+"
+    start = np.where(plus, tx["tss"] + lo, tx["tss"] - hi)
+    end = np.where(plus, tx["tss"] + hi, tx["tss"] - lo)
+    return pd.DataFrame({
+        "GeneID": tx["transcript_id"],
+        "Chr": tx["chrom"],
+        "Start": np.maximum(start, 1),
+        "End": np.maximum(end, 1),
+        "Strand": tx["strand"],
+    })
+
+
+rule tss_annotation:
+    # Transcript-level TSS windows of host genes (gene_type in annotation.gene_types):
+    # "tss" (lab TSS +/- window) and "pause" (TSS..+149, proTSScall). Runs in the snakemake env.
+    input:
+        gtf = config["annotation_gtf"]
+    output:
+        tss = f"{ANNOT_OUT}/tx/tss.saf",
+        pause = f"{ANNOT_OUT}/tx/pause.saf",
+        info = f"{ANNOT_OUT}/tx_info.tsv"
+    log:
+        f"{LOG_DIR}/tss_annotation/tss_annotation.log"
+    params:
+        host_regex = HOST_REGEX,
+        gene_types = config["annotation"]["gene_types"],
+        tss = WINDOWS["tss"],
+        pause = WINDOWS["pause"]
+    run:
+        tx = read_gtf_transcripts(input.gtf, params.host_regex, params.gene_types)
+        if tx.empty:
+            msg = (f"No transcripts in {input.gtf} on contigs matching '{params.host_regex}' with "
+                   f"gene_type in {params.gene_types}")
+            with open(log[0], "w") as fh:
+                fh.write(msg + "\n")
+            raise WorkflowError(msg)
+        tss_window_saf(tx, params.tss).to_csv(output.tss, sep="\t", index=False)
+        tss_window_saf(tx, params.pause).to_csv(output.pause, sep="\t", index=False)
+        tx.to_csv(output.info, sep="\t", index=False)
+        with open(log[0], "w") as fh:
+            fh.write(f"{len(tx)} transcripts of {tx['gene_id'].nunique()} genes\n")
+
+
+FC_EXTRA = "-F SAF --read2pos 5 -O -p"
+# --read2pos 5: count each R1 at its 5'-most base (the RNA 3' end); -s 2: R1 is antisense to the
+# RNA; -O: a read counts toward every overlapping window; -p (without --countReadPairs) on the
+# R1-only BAM counts single reads, as in the lab scripts.
+
+
+rule featurecounts_tx:
+    input:
+        samples = expand(f"{BAM_OUT}/r1/{{sample}}.bam", sample=SAMPLES_LIST),
+        annotation = f"{ANNOT_OUT}/tx/{{window}}.saf"
+    output:
+        multiext(f"{COUNTS_OUT}/tx/{{window}}", ".featureCounts", ".featureCounts.summary")
+    log:
+        f"{LOG_DIR}/featurecounts/tx_{{window}}.log"
+    params:
+        strand = 2,
+        extra = FC_EXTRA
+    threads:
+        config.get("featurecounts", {}).get("threads", 8)
+    wrapper:
+        "v9.17.1/bio/subread/featurecounts"
+
+
+def read_featurecounts(path):
+    """featureCounts matrix -> (annotation DataFrame, counts DataFrame with sample columns)."""
+    df = pd.read_csv(path, sep="\t", comment="#", index_col="Geneid", dtype={"Chr": str})
+    bam_cols = {f"{BAM_OUT}/r1/{s}.bam": s for s in SAMPLES_LIST}
+    counts = df[list(bam_cols)].rename(columns=bam_cols)
+    annotation = df.drop(columns=list(bam_cols))
+    return annotation, counts
+
+
+rule dominant_tss:
+    # proTSScall logic (Adelman lab): pause-window (TSS..+149) reads summed over all samples;
+    # transcripts with more than windows.active_min_reads are active; per gene the dominant TSS is
+    # the active transcript with the most reads (ties: most upstream TSS, then the longest span).
+    # Gene body = dominant TSS + body_offset .. TES, for spans >= body_min_span.
+    input:
+        pause = f"{COUNTS_OUT}/tx/pause.featureCounts",
+        info = f"{ANNOT_OUT}/tx_info.tsv"
+    output:
+        tsv = f"{ANNOT_OUT}/dominant_tss.tsv",
+        bed = f"{ANNOT_OUT}/dominant_tss.bed",
+        genebody = f"{ANNOT_OUT}/genebody.saf"
+    log:
+        f"{LOG_DIR}/dominant_tss/dominant_tss.log"
+    params:
+        min_reads = WINDOWS["active_min_reads"],
+        offset = WINDOWS["body_offset"],
+        min_span = WINDOWS["body_min_span"]
+    run:
+        _, pause = read_featurecounts(input.pause)
+        tx = pd.read_csv(input.info, sep="\t", dtype={"chrom": str, "gene_name": str},
+                         keep_default_na=False)
+        tx["pause_reads"] = tx["transcript_id"].map(pause.sum(axis=1)).fillna(0).astype(int)
+        active = tx[tx["pause_reads"] > params.min_reads].copy()
+        if active.empty:
+            msg = (f"No transcript has more than windows.active_min_reads = {params.min_reads} "
+                   "pause-window reads summed over all samples: no active genes")
+            with open(log[0], "w") as fh:
+                fh.write(msg + "\n")
+            raise WorkflowError(msg)
+        active["upstream_key"] = np.where(active["strand"] == "+", active["tss"], -active["tss"])
+        dominant = (active.sort_values(["gene_id", "pause_reads", "upstream_key", "span"],
+                                       ascending=[True, False, True, False])
+                          .drop_duplicates("gene_id")
+                          .drop(columns="upstream_key")
+                          .reset_index(drop=True))
+        dominant["has_body"] = dominant["span"] >= max(params.min_span, params.offset + 1)
+        dominant.to_csv(output.tsv, sep="\t", index=False)
+
+        plus = dominant["strand"] == "+"
+        bed = pd.DataFrame({
+            "chrom": dominant["chrom"],
+            "start": np.minimum(dominant["tss"], dominant["tes"]) - 1,
+            "end": np.maximum(dominant["tss"], dominant["tes"]),
+            "name": dominant["gene_id"] + "|" + dominant["gene_name"],
+            "score": 0,
+            "strand": dominant["strand"],
+        }).sort_values(["chrom", "start"])
+        bed.to_csv(output.bed, sep="\t", index=False, header=False)
+
+        body = dominant[dominant["has_body"]]
+        bplus = body["strand"] == "+"
+        pd.DataFrame({
+            "GeneID": body["gene_id"],
+            "Chr": body["chrom"],
+            "Start": np.where(bplus, body["tss"] + params.offset, body["tes"]),
+            "End": np.where(bplus, body["tes"], body["tss"] - params.offset),
+            "Strand": body["strand"],
+        }).to_csv(output.genebody, sep="\t", index=False)
+
+        with open(log[0], "w") as fh:
+            fh.write(f"{len(dominant)} active genes (dominant TSS), {len(body)} with a gene body\n")
+
+
+rule featurecounts_genebody:
+    input:
+        samples = expand(f"{BAM_OUT}/r1/{{sample}}.bam", sample=SAMPLES_LIST),
+        annotation = f"{ANNOT_OUT}/genebody.saf"
+    output:
+        multiext(f"{COUNTS_OUT}/genebody", ".featureCounts", ".featureCounts.summary")
+    log:
+        f"{LOG_DIR}/featurecounts/genebody.log"
+    params:
+        strand = 2,
+        extra = FC_EXTRA
+    threads:
+        config.get("featurecounts", {}).get("threads", 8)
+    wrapper:
+        "v9.17.1/bio/subread/featurecounts"
+
+
+def median_of_ratios(counts):
+    """DESeq2 median-of-ratios size factors over rows with counts > 0 in every sample.
+    Returns (size factors, number of rows used)."""
+    usable = counts[(counts > 0).all(axis=1)].astype(float)
+    if usable.empty:
+        return None, 0
+    log_counts = np.log(usable)
+    log_ratios = log_counts.sub(log_counts.mean(axis=1), axis=0)
+    return np.exp(log_ratios.median(axis=0)), len(usable)
+
+
+def pca_mqc(counts, size_factors, section_id, title, description, n_top=500):
+    """PC1/PC2 of log2(size-factor normalized counts + 1) over the n_top most variable
+    rows, as a MultiQC custom-content scatter plot."""
+    section = {"id": section_id, "section_name": "PCA", "description": description}
+    if counts.shape[1] < 2:
+        section.update(plot_type="html", data="<p>PCA needs at least 2 samples.</p>")
+        return section
+    norm = np.log2(counts.div(size_factors, axis=1) + 1)
+    norm = norm[norm.var(axis=1) > 0]
+    top = norm.loc[norm.var(axis=1).sort_values(ascending=False).index[:n_top]]
+    centered = (top.T - top.T.mean(axis=0)).to_numpy()
+    u, s, _ = np.linalg.svd(centered, full_matrices=False)
+    pcs = u * s
+    if pcs.shape[1] < 2:
+        pcs = np.hstack([pcs, np.zeros((pcs.shape[0], 2 - pcs.shape[1]))])
+    var = s ** 2
+    pct = list(100 * var / var.sum()) + [0.0, 0.0] if var.sum() > 0 else [0.0, 0.0]
+    section.update(
+        plot_type="scatter",
+        pconfig={
+            "id": f"{section_id}_plot",
+            "title": title,
+            "xlab": f"PC1 ({pct[0]:.1f}%)",
+            "ylab": f"PC2 ({pct[1]:.1f}%)",
+        },
+        data={s: {"x": float(pcs[i, 0]), "y": float(pcs[i, 1])} for i, s in enumerate(top.columns)},
+    )
+    return section
+
+
+def correlation_mqc(counts):
+    """Spearman correlation of counts between samples, as a MultiQC custom-content heatmap."""
+    section = {
+        "id": "proseq_correlation",
+        "section_name": "Sample correlation",
+        "description": "Spearman correlation of pause-window (TSS..+149) counts of active genes.",
+    }
+    if counts.shape[1] < 2:
+        section.update(plot_type="html", data="<p>Correlation needs at least 2 samples.</p>")
+        return section
+    rho = counts.corr(method="spearman")
+    section.update(
+        plot_type="heatmap",
+        pconfig={"id": "proseq_correlation_plot", "title": "PRO-seq: Spearman correlation",
+                 "min": float(min(0, rho.min().min())), "max": 1},
+        data={a: {b: float(rho.loc[a, b]) for b in rho.columns} for a in rho.index},
+    )
+    return section
+
+
+rule size_factors:
+    # Runs in the snakemake environment (pandas + numpy), not a conda env.
+    # sf_raw: 1 (unscaled counts). sf_depth: DESeq2 median-of-ratios on gene-body counts.
+    # sf_cpm: host R1 fragments / 1e6.
+    # sf_spikein: spike-in fragments / their geometric mean (Harvard NTC). Coverage is divided by
+    # the size factor (bigWig scale = 1 / sf), as in DESeq2.
+    input:
+        tss_tx = f"{COUNTS_OUT}/tx/tss.featureCounts",
+        pause_tx = f"{COUNTS_OUT}/tx/pause.featureCounts",
+        genebody = f"{COUNTS_OUT}/genebody.featureCounts",
+        dominant = f"{ANNOT_OUT}/dominant_tss.tsv",
+        info = f"{ANNOT_OUT}/tx_info.tsv",
+        fragments = expand(f"{BAM_OUT}/{{sample}}.fragments.tsv", sample=SAMPLES_LIST)
+    output:
+        table = f"{SIZEFACTOR_OUT}/size_factors.tsv",
+        mqc = f"{SIZEFACTOR_OUT}/size_factors_mqc.tsv",
+        pca = f"{SIZEFACTOR_OUT}/pca_mqc.json",
+        correlation = f"{SIZEFACTOR_OUT}/correlation_mqc.json",
+        tss = f"{COUNTS_OUT}/tss_tx.tsv",
+        pause = f"{COUNTS_OUT}/pause.tsv",
+        genebody = f"{COUNTS_OUT}/genebody.tsv",
+        pause_index = f"{COUNTS_OUT}/pause_index.tsv"
+    log:
+        f"{LOG_DIR}/size_factors/size_factors.log"
+    params:
+        spikein = SPIKEIN_ENABLED
+    run:
+        def fail(msg):
+            with open(log[0], "a") as fh:
+                fh.write(msg + "\n")
+            raise WorkflowError(msg)
+
+        messages = []
+        info = pd.read_csv(input.info, sep="\t", dtype={"chrom": str, "gene_name": str},
+                           keep_default_na=False).set_index("transcript_id")
+        dominant = pd.read_csv(input.dominant, sep="\t", dtype={"chrom": str, "gene_name": str},
+                               keep_default_na=False)
+
+        # transcript-level TSS window counts (lab layout)
+        _, tss = read_featurecounts(input.tss_tx)
+        tss_out = info.loc[tss.index, ["gene_id", "gene_name"]].join(tss)
+        tss_out.to_csv(output.tss, sep="\t", index_label="transcript_id")
+
+        # gene-level pause counts: the dominant transcript's pause-window row
+        pause_annot, pause_tx = read_featurecounts(input.pause_tx)
+        pause = pause_tx.loc[dominant["transcript_id"]]
+        pause.index = pd.Index(dominant["gene_id"], name="gene_id")
+        pause_len = pause_annot.loc[dominant["transcript_id"], "Length"].to_numpy()
+        gene_cols = dominant.set_index("gene_id")[["gene_name", "transcript_id"]]
+        gene_cols.join(pause).to_csv(output.pause, sep="\t")
+
+        body_annot, body = read_featurecounts(input.genebody)
+        body.index.name = "gene_id"
+        gene_cols.loc[body.index].join(body).to_csv(output.genebody, sep="\t")
+
+        # pausing index: pause-window density / gene-body density, per gene and sample
+        pause_density = pause.div(pause_len, axis=0)
+        body_density = body.div(body_annot["Length"], axis=0)
+        pause_index = pause_density.loc[body.index] / body_density.where(body_density > 0)
+        gene_cols.loc[body.index].join(pause_index).to_csv(
+            output.pause_index, sep="\t", float_format="%.6g")
+
+        fragments = pd.concat(pd.read_csv(f, sep="\t", index_col="sample", dtype={"sample": str},
+                                          keep_default_na=False) for f in input.fragments)
+        table = fragments.loc[SAMPLES_LIST].copy()
+        table.index.name = "sample"
+        total_host_spike = table["host"] + table["spikein"]
+        table["spikein_pct"] = (100 * table["spikein"] / total_host_spike.where(total_host_spike > 0)).fillna(0)
+        mapped = table["total_mapped"]
+        table["rdna_pct"] = (100 * table["rdna"] / mapped.where(mapped > 0)).fillna(0)
+        table["chrM_pct"] = (100 * table["chrM"] / mapped.where(mapped > 0)).fillna(0)
+        table["median_pause_index"] = pause_index.median(axis=0, skipna=True)
+        table["active_genes"] = len(dominant)
+
+        sf_depth, n_depth = median_of_ratios(body)
+        if sf_depth is None:
+            fail("No gene has gene-body counts in every sample: cannot compute depth size factors.")
+        table["sf_depth"] = sf_depth
+        messages.append(f"sf_depth: median-of-ratios over {n_depth} gene bodies")
+
+        if (table["host"] == 0).any():
+            fail(f"No host R1 fragments for sample(s) {table.index[table['host'] == 0].tolist()}")
+        table["sf_cpm"] = table["host"] / 1e6
+        table["sf_raw"] = 1.0
+
+        if params.spikein:
+            if (table["spikein"] == 0).any():
+                fail(
+                    "No spike-in fragments for sample(s) "
+                    f"{table.index[table['spikein'] == 0].tolist()}: cannot spike-in normalize. "
+                    "Set 'spikein: enabled: false' in config.yaml if no Drosophila spike-in was used."
+                )
+            spike = table["spikein"].astype(float)
+            table["sf_spikein"] = spike / np.exp(np.log(spike).mean())
+            messages.append("sf_spikein: spike-in fragments / geometric mean")
+
+        table.to_csv(output.table, sep="\t", float_format="%.6g")
+
+        # MultiQC general stats
+        columns = {
+            "spikein_pct": ("Spike-in %", "{:.2f}"),
+            "rdna_pct": ("rDNA %", "{:.2f}"),
+            "chrM_pct": ("chrM %", "{:.2f}"),
+            "median_pause_index": ("Pause index", "{:.2f}"),
+            "sf_depth": ("SF depth", "{:.3f}"),
+        }
+        if params.spikein:
+            columns["sf_spikein"] = ("SF spike-in", "{:.3f}")
+        with open(output.mqc, "w") as fh:
+            fh.write("# id: 'proseq_norm'\n")
+            fh.write("# section_name: 'PRO-seq normalization'\n")
+            fh.write("# plot_type: 'generalstats'\n")
+            fh.write("# pconfig:\n")
+            for col, (title, fmt) in columns.items():
+                fh.write(f"#     {col}:\n#         title: '{title}'\n#         format: '{fmt}'\n")
+            table[list(columns)].to_csv(fh, sep="\t", index_label="Sample", float_format="%.6g")
+
+        with open(output.pca, "w") as fh:
+            json.dump(pca_mqc(body, table["sf_depth"], "proseq_pca", "PRO-seq: PCA",
+                              "PCA of log2(depth-normalized gene-body counts + 1), top 500 most "
+                              "variable genes."), fh, indent=2)
+        with open(output.correlation, "w") as fh:
+            json.dump(correlation_mqc(pause), fh, indent=2)
+
+        with open(log[0], "w") as fh:
+            fh.write("\n".join(messages) + "\n")
+
+
+rule bigwig:
+    # 1-nt tracks of the RNA 3' end (Pol II active site): the 5'-most base of each host R1, with
+    # strands swapped because R1 is the reverse complement of the RNA (R1 on the minus strand ->
+    # plus-strand RNA). Coverage is divided by the size factor.
+    input:
+        bam = f"{BAM_OUT}/r1/{{sample}}.bam",
+        bai = f"{BAM_OUT}/r1/{{sample}}.bam.bai",
+        sf = f"{SIZEFACTOR_OUT}/size_factors.tsv"
+    output:
+        plus = f"{BIGWIG_OUT}/{{sample}}.{{norm}}.plus.bw",
+        minus = f"{BIGWIG_OUT}/{{sample}}.{{norm}}.minus.bw"
+    log:
+        f"{LOG_DIR}/bigwig/{{sample}}.{{norm}}.log"
+    params:
+        host_regex = HOST_REGEX,
+        minus_sign = -1 if config["bigwig"]["negate_minus"] else 1,
+        prefix = lambda w: f"{BIGWIG_OUT}/{w.sample}.{w.norm}"
+    conda:
+        "envs/bedtools.yaml"
+    shell:
+        """
+        sf=$(awk -F '\\t' -v s={wildcards.sample} -v col=sf_{wildcards.norm} \
+            'NR == 1 {{ for (i = 1; i <= NF; i++) if ($i == col) c = i; next }} c && ($1 "") == (s "") {{ print $c }}' {input.sf})
+        if [ -z "$sf" ] || [ "$(printf '%s\n' "$sf" | wc -l)" -ne 1 ]; then
+            echo "Expected exactly one sf_{wildcards.norm} size factor for {wildcards.sample} in {input.sf}, got: $sf" | tee {log} >&2
+            exit 1
+        fi
+        scale=$(awk -v sf="$sf" 'BEGIN {{ printf "%.10g", 1 / sf }}')
+        echo "size factor $sf -> scale $scale" > {log}
+
+        samtools view -H {input.bam} | \
+            awk -F '\\t' -v re='{params.host_regex}' '$1 == "@SQ" {{ n = substr($2, 4); l = substr($3, 4); if (n ~ re) print n "\\t" l }}' \
+            > {params.prefix}.chrom_sizes
+
+        # R1 on the minus strand marks a plus-strand RNA 3' end, and vice versa
+        bedtools genomecov -ibam {input.bam} -bg -5 -strand - -scale "$scale" 2>> {log} | \
+            LC_COLLATE=C sort -k1,1 -k2,2n > {params.prefix}.plus.bg
+        bedtools genomecov -ibam {input.bam} -bg -5 -strand + -scale "$scale" 2>> {log} | \
+            awk -v m={params.minus_sign} 'BEGIN {{ OFS = "\\t" }} {{ $4 = m * $4; print }}' | \
+            LC_COLLATE=C sort -k1,1 -k2,2n > {params.prefix}.minus.bg
+        bedGraphToBigWig {params.prefix}.plus.bg {params.prefix}.chrom_sizes {output.plus} 2>> {log}
+        bedGraphToBigWig {params.prefix}.minus.bg {params.prefix}.chrom_sizes {output.minus} 2>> {log}
+        rm {params.prefix}.plus.bg {params.prefix}.minus.bg {params.prefix}.chrom_sizes
+        """
+
+
+rule bigwig_group:
+    # Mean of the normalized per-sample tracks of a group (samples.csv `group` column). Missing
+    # positions count as 0 (no --skipNAs: with sparse 1-nt tracks it would drop most signal).
+    input:
+        lambda w: expand(f"{BIGWIG_OUT}/{{sample}}.{w.norm}.{w.strand}.bw", sample=GROUPS[w.group])
+    output:
+        f"{BIGWIG_OUT}/group/{{group}}.{{norm}}.{{strand}}.bw"
+    log:
+        f"{LOG_DIR}/bigwig_group/{{group}}.{{norm}}.{{strand}}.log"
+    threads:
+        config.get("bigwig", {}).get("threads", 4)
+    conda:
+        "envs/deeptools.yaml"
+    shell:
+        """
+        bigwigAverage --bigwigs {input} --binSize 1 --outFileFormat bigwig \
+            --numberOfProcessors {threads} --outFileName {output} &> {log}
+        """
+
+
+def multiqc_inputs():
+    inputs = {
+        "fastp": expand(f"{FASTP_OUT}/{{sample}}.fastp.json", sample=SAMPLES_LIST),
+        "bowtie2": expand(f"{LOG_DIR}/bowtie2/{{sample}}.log", sample=SAMPLES_LIST),
+        "featurecounts": f"{COUNTS_OUT}/genebody.featureCounts.summary",
+        "norm": f"{SIZEFACTOR_OUT}/size_factors_mqc.tsv",
+        "pca": f"{SIZEFACTOR_OUT}/pca_mqc.json",
+        "correlation": f"{SIZEFACTOR_OUT}/correlation_mqc.json",
+    }
+    if UMI_ENABLED:
+        inputs["dups"] = (expand(f"{LOG_DIR}/umi_extract/{{sample}}.log", sample=SAMPLES_LIST)
+                          + expand(f"{LOG_DIR}/umi_dedup/{{sample}}.log", sample=SAMPLES_LIST))
+    else:
+        inputs["dups"] = expand(f"{BAM_OUT}/{{sample}}.markdup.stats.txt", sample=SAMPLES_LIST)
+    if PRESEQ_ENABLED:
+        inputs["preseq"] = expand(f"{PRESEQ_OUT}/{{sample}}.ccurve.txt", sample=SAMPLES_LIST)
+    return inputs
+
+
+rule multiqc:
+    input:
+        **multiqc_inputs(),
+        config = "multiqc_config.yaml"
+    output:
+        f"{MULTIQC_OUT}/multiqc_report.html",
+        directory(f"{MULTIQC_OUT}/multiqc_data")
+    log:
+        f"{LOG_DIR}/multiqc/multiqc.log"
+    params:
+        extra = "--force",
+        use_input_files_only = True
+    wrapper:
+        "v9.17.1/bio/multiqc"

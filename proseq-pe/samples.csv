@@ -1,0 +1,6 @@
+sample_name,read1,read2,group
+dmso_rep1,/path/to/fastq/dmso_rep1_L001_R1.fq.gz,/path/to/fastq/dmso_rep1_L001_R2.fq.gz,dmso
+dmso_rep1,/path/to/fastq/dmso_rep1_L002_R1.fq.gz,/path/to/fastq/dmso_rep1_L002_R2.fq.gz,dmso
+dmso_rep2,/path/to/fastq/dmso_rep2_R1.fq.gz,/path/to/fastq/dmso_rep2_R2.fq.gz,dmso
+treat_rep1,/path/to/fastq/treat_rep1_R1.fq.gz,/path/to/fastq/treat_rep1_R2.fq.gz,treat
+treat_rep2,/path/to/fastq/treat_rep2_R1.fq.gz,/path/to/fastq/treat_rep2_R2.fq.gz,treat

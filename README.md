@@ -12,6 +12,7 @@
 - Paired-end ATAC-seq processing, peak calling with Genrich, and promoter abundance estimation
 - Paired-end CUT&RUN processing with IgG controls and peak calling with Genrich
 - Paired-end TT-seq processing with *Drosophila* spike-in and depth normalization, strand-specific bigWigs and gene counts
+- Paired-end PRO-seq processing with *Drosophila* spike-in, rDNA filtering, 1-nt Pol II active-site bigWigs, pause/gene-body counts and pausing index
 - Paired-end RRBS processing, methylation calling, and extraction
 - De novo transcript assembly and quantification
 - Estimation of bacterial read abundance from sequencing data using Kraken2 and Braken

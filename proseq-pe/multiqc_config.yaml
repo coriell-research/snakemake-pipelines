@@ -1,0 +1,5 @@
+# umi_tools logs carry the output FASTQ/BAM path, not the sample; name them after the log file
+# ({sample}.log). fastp samples are named by --report_title, featureCounts/preseq/markdup/bowtie2
+# by their file names.
+use_filename_as_sample_name:
+  - umitools

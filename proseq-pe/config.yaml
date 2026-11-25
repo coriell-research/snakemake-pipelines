@@ -1,0 +1,90 @@
+work_dir: "results"
+
+# Combined host + Drosophila annotation built by generate-resources (rule combine_gtf_with_dm6).
+# Only host transcripts (contigs matching host_contig_regex) are used, for the TSS windows.
+annotation_gtf: "/mnt/data/references/GRCh38/GENCODE/v48/gencode.v48.basic.annotation.with_dm6.gtf.gz"
+
+# Contig prefix marking spike-in (Drosophila) sequences in the combined reference. Fixed to "dm6_"
+# by generate-resources. The fly rDNA and mitochondrial contigs are left out of the spike-in count.
+spike_prefix: "dm6_"
+spikein_exclude_contigs: ["dm6_rDNA", "dm6_mitochondrion_genome"]
+
+# Contigs holding human 45S rDNA: the U13369.1 unit added by generate-resources plus the two GRCh38
+# unplaced scaffolds that carry rDNA copies. rRNA reads multimap between them, so they are counted
+# together (at any MAPQ) for the rDNA % and never enter counts or tracks.
+rdna_contigs: ["rDNA_U13369", "GL000220.1", "KI270733.1"]
+
+# Host contigs kept for counting and tracks (as the standard-chromosome filter of the lab scripts).
+# chrM is counted separately (chrM %) and excluded.
+host_contig_regex: "^chr([0-9]+|X|Y)$"
+mito_contig: "chrM"
+
+fastp:
+  threads: 8
+  # PRO-seq adapters (Mahat et al. 2016): R1 reads into the reverse complement of the 5' RNA adapter
+  # (TruSeq small RNA), R2 into the 3' RNA adapter. --overlap_len_require 15 lets paired-end
+  # overlap trimming work on the short inserts typical of PRO-seq (default 30). --cut_tail with a
+  # 1-nt window at Q20 approximates the Danko lab's cutadapt -q 20 3' quality trim; reads shorter
+  # than 20 nt rarely map uniquely to the human genome.
+  extra_params: >-
+    --adapter_sequence TGGAATTCTCGGGTGCCAAGG
+    --adapter_sequence_r2 GATCGTCGGACTGTAGAACTCTGAAC
+    --cut_tail --cut_tail_window_size 1 --cut_tail_mean_quality 20
+    --length_required 20
+    --overlap_len_require 15
+
+# Unique molecular identifiers at the 5' end of R1 and R2 (e.g. Harvard NTC VRA3-6N/VRA5-6N
+# adapters: 6 + 6). When enabled, umi_tools extracts them before trimming and deduplicates by
+# position + UMI after alignment.
+umi:
+  enabled: false
+  r1_length: 6
+  r2_length: 6
+
+bowtie2:
+  threads: 12
+  # Combined GRCh38 + dm6_ + human rDNA index built by generate-resources (rule
+  # bowtie2_dm6_rdna_index). Do not pass -p/--threads/-o here (set by the wrapper).
+  index: "/mnt/data/references/GRCh38/GENCODE/v48/bt2_dm6_rdna_idx/GRCh38.primary_assembly.genome"
+  # --dovetail keeps pairs where leftover adapter bases make R1 extend past R2's start
+  extra_params: "--very-sensitive --no-mixed --no-discordant --dovetail --maxins 1000"
+
+samtools:
+  threads: 4
+
+featurecounts:
+  threads: 8
+
+filter:
+  min_mapq: 10
+  # Without UMIs, duplicates are always marked (samtools markdup); true also drops them from counts
+  # and tracks. Off by default: promoter-paused RNAs share both ends, so position-based removal
+  # collapses pause peaks (NTC; Mahat et al. 2016). Ignored when umi.enabled (umi_tools removes
+  # PCR duplicates).
+  remove_duplicates: false
+
+annotation:
+  # GENCODE gene_type values whose transcripts get TSS windows
+  gene_types: ["protein_coding"]
+
+windows:
+  # TSS-relative windows [start, end], inclusive, in nt (negative = upstream)
+  tss: [-150, 149]     # lab scripts: promoters(tx, upstream = 150, downstream = 150)
+  pause: [0, 149]      # promoter-proximal pause window (proTSScall, Harvard NTC)
+  body_offset: 250     # gene body = dominant TSS + body_offset .. TES
+  body_min_span: 400   # minimum TSS..TES span for a gene body
+  active_min_reads: 4  # a TSS is active with more than this many pause reads (summed over samples)
+
+# Drosophila spike-in normalization. Remove this block or set enabled: false if the libraries have
+# no spike-in; only raw, depth- and CPM-normalized bigWigs are then produced.
+spikein:
+  enabled: true
+
+bigwig:
+  threads: 4
+  # true writes minus-strand values as negative (Danko lab / dREG convention; use with the raw
+  # tracks as dREG input)
+  negate_minus: false
+
+preseq:
+  enabled: true
