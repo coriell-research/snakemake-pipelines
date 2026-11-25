@@ -10,6 +10,9 @@ human:
     promoter_windows: "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_48/gencode.v48.promoter_windows.gff3.gz"
     transcripts_fa: "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_48/gencode.v48.transcripts.fa.gz"
     genome_fa: "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_48/GRCh38.primary_assembly.genome.fa.gz"
+    # Human 45S rDNA repeating unit (GenBank U13369.1; contig renamed rDNA_U13369). Added to the
+    # host + dm6 bowtie2 index (bt2_dm6_rdna_idx, used by proseq-pe) so rRNA reads land on it.
+    rdna_fa: "https://github.com/coriell-research/snakemake-pipelines/raw/refs/heads/main/generate-resources/data/U13369.1_human_rDNA.fa.gz"
   star:
     sjdb_overhang: 149
   excluderanges:
@@ -42,7 +45,8 @@ mouse:
 # Drosophila melanogaster spike-in genome (Ensembl BDGP6.54 = dm6 sequence; release 114 matches
 # GENCODE v48 / Ensembl 114). Fly contigs, gene_ids and transcript_ids are prefixed "dm6_" and
 # combined with each host assembly in `hosts` (combined STAR index, GTF, chrom sizes and
-# excluderanges; used by ttseq-pe). Only GRCh38 for now.
+# excluderanges; used by ttseq-pe). Only GRCh38 for now. Hosts whose urls include rdna_fa also get
+# a host + dm6 + rDNA bowtie2 index (used by proseq-pe).
 drosophila:
   assembly: "BDGP6.54"
   release: "114"

@@ -35,6 +35,8 @@ properties:
             type: string
           genome_fa:
             type: string
+          rdna_fa:
+            type: string
       star:
         type: object
         additionalProperties: false

@@ -57,8 +57,13 @@ def build_species(cfg):
     annotation_gtf_gz = register(f"{species_dir}/{basename_of(urls['annotation_gtf'])}", urls["annotation_gtf"])
     transcripts_fa_gz = register(f"{species_dir}/{basename_of(urls['transcripts_fa'])}", urls["transcripts_fa"])
 
+    # Optional human 45S rDNA unit, only combined into the host + dm6 + rDNA bowtie2 index
+    rdna_fa_gz = None
+    if "rdna_fa" in urls:
+        rdna_fa_gz = register(f"{species_dir}/{basename_of(urls['rdna_fa'])}", urls["rdna_fa"])
+
     for key, url in urls.items():
-        if key not in ("genome_fa", "annotation_gtf", "transcripts_fa"):
+        if key not in ("genome_fa", "annotation_gtf", "transcripts_fa", "rdna_fa"):
             EXTRA_TARGETS.append(register(f"{species_dir}/{basename_of(url)}", url))
 
     register(f"{species_dir}/excluderanges.bed.gz", cfg["excluderanges"]["bed_url"])
@@ -69,6 +74,7 @@ def build_species(cfg):
         "genome_fa_gz": genome_fa_gz,
         "annotation_gtf_gz": annotation_gtf_gz,
         "transcripts_fa_gz": transcripts_fa_gz,
+        "rdna_fa_gz": rdna_fa_gz,
         # temp() plain copies, only for STAR (it can't read gzipped FASTA/GTF)
         "star_genome_fa": register_decompress(genome_fa_gz),
         "star_with_spikes_fa": register_decompress(f"{species_dir}/{assembly}.primary_assembly.genome.with_spikes.fa.gz"),
@@ -119,6 +125,9 @@ for host in DM6_HOSTS:
         "star_with_dm6_gtf": register_decompress(dm6_gtf_gz),
     })
 
+# Hosts that also get a host + dm6 + rDNA bowtie2 index (PRO-seq): drosophila.hosts with an rdna_fa
+DM6_RDNA_HOSTS = [h for h in DM6_HOSTS if SPECIES[h]["rdna_fa_gz"]]
+
 wildcard_constraints:
     assembly = "|".join(re.escape(a) for a in SPECIES),
     release = "|".join(re.escape(s["release"]) for s in SPECIES.values())
@@ -162,6 +171,10 @@ WITH_DM6_FA_GZ_T = f"{SPECIES_DIR_T}/{GENOME_STEM_T}.with_dm6.fa.gz"
 STAR_DM6_IDX_T = f"{SPECIES_DIR_T}/STAR_dm6_idx"
 CHROM_SIZES_DM6_T = f"{SPECIES_DIR_T}/{GENOME_STEM_T}.fa.dm6.chrom_sizes"
 EXCLUDERANGES_DM6_T = f"{SPECIES_DIR_T}/excluderanges.with_dm6.bed.gz"
+
+# Host + dm6_ + human rDNA (rDNA_U13369) templates, built only for DM6_RDNA_HOSTS
+WITH_DM6_RDNA_FA_GZ_T = f"{SPECIES_DIR_T}/{GENOME_STEM_T}.with_dm6_rdna.fa.gz"
+BOWTIE2_DM6_RDNA_PREFIX_T = f"{SPECIES_DIR_T}/bt2_dm6_rdna_idx/{GENOME_STEM_T}"
 
 # Salmon decoy-aware index inputs (transient)
 SALMON_DECOYS_T = f"{SPECIES_DIR_T}/decoys.txt"
@@ -215,6 +228,8 @@ def dm6_targets():
         expand_dm6_hosts(CHROM_SIZES_DM6_T),
         expand_dm6_hosts(EXCLUDERANGES_DM6_T),
         [SPECIES[h]["dm6_gtf_gz"] for h in DM6_HOSTS],
+        [f"{BOWTIE2_DM6_RDNA_PREFIX_T}{ext}".format(assembly=h, release=SPECIES[h]["release"])
+         for h in DM6_RDNA_HOSTS for ext in BOWTIE2_EXTS],
     ]
 
 
@@ -244,7 +259,7 @@ rule all:
         expand_species(CHROM_SIZES_ERCC_GFP_T),
         # E. coli-only index (CUT&RUN spike-in normalization)
         multiext(BOWTIE2_ECOLI_PREFIX, *BOWTIE2_EXTS),
-        # Host + Drosophila (dm6_-prefixed) spike-in resources (TT-seq)
+        # Host + Drosophila (dm6_-prefixed) spike-in resources (TT-seq, PRO-seq)
         dm6_targets(),
         # Shared resources
         expand_species(EXCLUDERANGES_BED_T),
@@ -639,6 +654,37 @@ rule star_dm6_index:
         f"{LOG_DIR}/star_dm6_index/{{assembly}}_{{release}}.log"
     wrapper:
         "v9.17.1/bio/star/index"
+
+
+rule combine_with_dm6_rdna:
+    # Host + dm6_ + human rDNA unit, for the PRO-seq bowtie2 index (temp; see combine_with_spikes).
+    input:
+        genome = species_file("genome_fa_gz"),
+        fly = FLY_PREFIXED_FA_GZ,
+        rdna = species_file("rdna_fa_gz")
+    output:
+        temp(WITH_DM6_RDNA_FA_GZ_T)
+    wildcard_constraints:
+        assembly = "|".join(re.escape(h) for h in DM6_RDNA_HOSTS) or "^$"
+    shell:
+        "cat {input.genome} {input.fly} {input.rdna} > {output}"
+
+
+rule bowtie2_dm6_rdna_index:
+    input:
+        ref = WITH_DM6_RDNA_FA_GZ_T
+    output:
+        multiext(BOWTIE2_DM6_RDNA_PREFIX_T, *BOWTIE2_EXTS)
+    params:
+        extra = ""
+    threads:
+        config.get("threads", {}).get("bowtie2", 32)
+    resources:
+        index_jobs = 1
+    log:
+        f"{LOG_DIR}/bowtie2_dm6_rdna_index/{{assembly}}_{{release}}.log"
+    wrapper:
+        "v9.17.1/bio/bowtie2/build"
 
 
 rule chrom_sizes_dm6:

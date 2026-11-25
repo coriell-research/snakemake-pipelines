@@ -36,7 +36,8 @@ Everything is written under `<resources_dir>/<assembly>/GENCODE/<release>/...` (
 *Drosophila* downloads go to `<resources_dir>/BDGP6.54/Ensembl/114/`). The other
 pipelines' configs (`atacseq-pe`, `rnaseq-pe`, `rrbs-pe`, `de-novo-transcript-assembly`, `ttseq-pe`)
 expect this tree at the shared location `/mnt/data/references`, and default to the spike-in
-indices (ERCC + GFP, lambda for Bismark, or the host + dm6 index for `ttseq-pe`).
+indices (ERCC + GFP, lambda for Bismark, the host + dm6 STAR index for `ttseq-pe`, or the
+host + dm6 + rDNA bowtie2 index for `proseq-pe`).
 
 `/mnt/data/references` is not writable by regular users. To add resources there, build them into
 a directory you can write to and have an admin copy them in (see *Building only the human +
@@ -44,7 +45,7 @@ Drosophila resources* below).
 
 ### Building only the human + Drosophila resources
 
-The `dm6` target builds just the host + *Drosophila* resources (and the 6 downloads they need)
+The `dm6` target builds just the host + *Drosophila* resources (and the 7 downloads they need)
 instead of every index. Since `/mnt/data/references` is read-only for regular users, build them
 into a directory you can write to:
 
@@ -61,9 +62,12 @@ shared tree (only these paths are new; nothing existing is overwritten):
 /path/to/my/references/GRCh38/GENCODE/v48/gencode.v48.basic.annotation.with_dm6.gtf.gz
 /path/to/my/references/GRCh38/GENCODE/v48/GRCh38.primary_assembly.genome.fa.dm6.chrom_sizes
 /path/to/my/references/GRCh38/GENCODE/v48/excluderanges.with_dm6.bed.gz
+/path/to/my/references/GRCh38/GENCODE/v48/bt2_dm6_rdna_idx/
+/path/to/my/references/GRCh38/GENCODE/v48/U13369.1_human_rDNA.fa.gz
 ```
 
-or point `star.index_dir` and `annotation_gtf` in `ttseq-pe/config.yaml` at your copy.
+or point `star.index_dir` and `annotation_gtf` in `ttseq-pe/config.yaml` (and `bowtie2.index` in
+`proseq-pe/config.yaml`) at your copy.
 
 ### Overview
 
@@ -120,6 +124,12 @@ GRCm39/M38, mouse GRCm38-mm10/M25):
    - `<assembly>.primary_assembly.genome.fa.dm6.chrom_sizes` - includes the `dm6_` contigs
    - `excluderanges.with_dm6.bed.gz` - host excluderanges plus the Boyle-lab dm6 excludable
      regions (renamed `chr*` -> `dm6_*`), both cut to BED3
+   - For hosts whose `urls` include `rdna_fa` (GRCh38): a bowtie2 index of genome + dm6 + the
+     human 45S rDNA repeating unit (`bt2_dm6_rdna_idx/`, for PRO-seq, see `proseq-pe`). The
+     GRCh38 primary assembly has no complete rDNA unit (only partial copies on unplaced
+     scaffolds), so the unit (GenBank U13369.1, contig renamed `rDNA_U13369`) is added to give
+     rRNA run-on reads somewhere to land, as the Danko lab does; `proseq-pe` counts and excludes
+     them.
 
 ### Directory Structure
 
@@ -164,7 +174,9 @@ GRCm39/M38, mouse GRCm38-mm10/M25):
 ├── STAR_dm6_idx/              # Genome + dm6_-prefixed fly genome
 ├── gencode.v*.basic.annotation.with_dm6.gtf.gz
 ├── <assembly>.primary_assembly.genome.fa.dm6.chrom_sizes
-└── excluderanges.with_dm6.bed.gz
+├── excluderanges.with_dm6.bed.gz
+├── U13369.1_human_rDNA.fa.gz  # Human 45S rDNA unit (contig rDNA_U13369)
+└── bt2_dm6_rdna_idx/          # Genome + dm6_ + rDNA_U13369 (bowtie2, PRO-seq)
 
 <resources_dir>/BDGP6.54/Ensembl/114/
 ├── Drosophila_melanogaster.BDGP6.54.dna.toplevel.fa.gz           # Ensembl download
@@ -203,6 +215,9 @@ GRCm39/M38, mouse GRCm38-mm10/M25):
   built once by `rule combine_with_spikes` as a `temp()` file). Salmon gets its own materialized
   `gentrome[_ercc_gfp].fa.gz` and `decoys.txt` (both `temp()`) instead, since
   ERCC/GFP need to land in its target section rather than its decoy section.
+- The human rDNA unit (`data/U13369.1_human_rDNA.fa.gz`, fetched from NCBI nuccore U13369.1 with
+  its header renamed to `rDNA_U13369`) is downloaded from this repo like the spike-ins below,
+  into the host's GENCODE directory.
 - The ERCC92, GFP, and lambda phage spike-in FASTAs have no canonical public source, so they're
   downloaded from this repo's own `generate-resources/data/` directory (see `spike_ins` in
   `config.yaml`) into `<resources_dir>/spike_ins/`, and are shared across all three species
