@@ -3,3 +3,4 @@
 # by their file names.
 use_filename_as_sample_name:
   - umitools
+no_version_check: true

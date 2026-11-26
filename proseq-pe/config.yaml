@@ -79,9 +79,11 @@ windows:
 # no spike-in; only raw, depth- and CPM-normalized bigWigs are then produced.
 spikein:
   enabled: true
+  # fail if any sample has fewer spike-in fragments than this % of host + spike-in (typical
+  # Drosophila spike-ins give ~1-5%; far less means no usable spike-in)
+  min_pct: 0.1
 
 bigwig:
-  threads: 4
   # true writes minus-strand values as negative (Danko lab / dREG convention; use with the raw
   # tracks as dREG input)
   negate_minus: false

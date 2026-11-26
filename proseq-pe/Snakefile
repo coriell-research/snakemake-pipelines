@@ -259,8 +259,7 @@ if UMI_ENABLED:
             umi = f"{LOG_DIR}/umi_dedup/{{sample}}.log",
             samtools = f"{LOG_DIR}/umi_dedup/{{sample}}.samtools.log"
         params:
-            sort_mem = "4G",
-            tmp_bam = lambda w: f"{BAM_OUT}/predup/{w.sample}.dedup.unsorted.bam"
+            sort_mem = "4G"
         threads:
             config.get("samtools", {}).get("threads", 4)
         conda:
@@ -270,15 +269,17 @@ if UMI_ENABLED:
             samtools view -u -f 2 -F 2304 -@ {threads} {input.bam} 2> {log.samtools} | \
             samtools sort -@ {threads} -m {params.sort_mem} --write-index \
                 -o {output.predup}##idx##{output.predup_csi} - 2>> {log.samtools}
-            umi_tools dedup --paired -I {output.predup} -S {params.tmp_bam} -L {log.umi}
-            samtools sort -@ {threads} -m {params.sort_mem} --write-index \
-                -o {output.bam}##idx##{output.csi} {params.tmp_bam} 2>> {log.samtools}
-            rm {params.tmp_bam}
+            tmp=$(mktemp -d)
+            trap 'rm -rf "$tmp"' EXIT
+            umi_tools dedup --paired -I {output.predup} -S "$tmp/dedup.bam" -L {log.umi}
+            samtools sort -@ {threads} -m {params.sort_mem} -T "$tmp/sort" --write-index \
+                -o {output.bam}##idx##{output.csi} "$tmp/dedup.bam" 2>> {log.samtools}
             """
 else:
     rule markdup:
         # Proper pairs, primary alignments; duplicates are marked, not removed (see
         # filter.remove_duplicates). bowtie2 output is name-grouped, so no collate is needed.
+        # Stats are written as JSON: MultiQC does not detect the plain-text markdup stats.
         # No MAPQ filter here: rDNA reads are counted at any MAPQ (they multimap between
         # rDNA_U13369 and the rDNA-bearing GRCh38 scaffolds).
         input:
@@ -286,7 +287,7 @@ else:
         output:
             bam = f"{BAM_OUT}/{{sample}}.bam",
             csi = f"{BAM_OUT}/{{sample}}.bam.csi",
-            stats = f"{BAM_OUT}/{{sample}}.markdup.stats.txt"
+            stats = f"{BAM_OUT}/{{sample}}.markdup.json"
         log:
             f"{LOG_DIR}/markdup/{{sample}}.log"
         params:
@@ -300,7 +301,7 @@ else:
             samtools view -u -f 2 -F 2304 -@ {threads} {input.bam} 2> {log} | \
             samtools fixmate -m -u -@ {threads} - - 2>> {log} | \
             samtools sort -u -@ {threads} -m {params.sort_mem} - 2>> {log} | \
-            samtools markdup --write-index -f {output.stats} -@ {threads} - {output.bam}##idx##{output.csi} 2>> {log}
+            samtools markdup --json --write-index -f {output.stats} -@ {threads} - {output.bam}##idx##{output.csi} 2>> {log}
             """
 
 
@@ -670,7 +671,8 @@ rule size_factors:
     log:
         f"{LOG_DIR}/size_factors/size_factors.log"
     params:
-        spikein = SPIKEIN_ENABLED
+        spikein = SPIKEIN_ENABLED,
+        spikein_min_pct = SPIKEIN.get("min_pct", 0.1)
     run:
         def fail(msg):
             with open(log[0], "a") as fh:
@@ -737,6 +739,16 @@ rule size_factors:
                     f"{table.index[table['spikein'] == 0].tolist()}: cannot spike-in normalize. "
                     "Set 'spikein: enabled: false' in config.yaml if no Drosophila spike-in was used."
                 )
+            low = table.index[table["spikein_pct"] < params.spikein_min_pct].tolist()
+            if low:
+                fail(
+                    f"Spike-in fragments below spikein.min_pct = {params.spikein_min_pct}% of host + "
+                    f"spike-in for sample(s) {low} (spike-in %: "
+                    f"{table.loc[low, 'spikein_pct'].round(4).to_dict()}). That is too few reads for "
+                    "a reliable spike-in factor and suggests no Drosophila spike-in was added (typical "
+                    "spike-ins give ~1-5%). Set 'spikein: enabled: false' in config.yaml, or lower "
+                    "spikein.min_pct if this level is expected."
+                )
             spike = table["spikein"].astype(float)
             table["sf_spikein"] = spike / np.exp(np.log(spike).mean())
             messages.append("sf_spikein: spike-in fragments / geometric mean")
@@ -773,6 +785,24 @@ rule size_factors:
             fh.write("\n".join(messages) + "\n")
 
 
+rule chrom_sizes:
+    # Host contig lengths for the bigWigs, from the R1 BAM header (all BAMs share one header)
+    input:
+        f"{BAM_OUT}/r1/{SAMPLES_LIST[0]}.bam"
+    output:
+        f"{BIGWIG_OUT}/host.chrom_sizes"
+    params:
+        host_regex = HOST_REGEX
+    conda:
+        "envs/samtools.yaml"
+    shell:
+        """
+        samtools view -H {input} | \
+            awk -F '\\t' -v re='{params.host_regex}' '$1 == "@SQ" {{ n = substr($2, 4); l = substr($3, 4); if (n ~ re) print n "\\t" l }}' \
+            > {output}
+        """
+
+
 rule bigwig:
     # 1-nt tracks of the RNA 3' end (Pol II active site): the 5'-most base of each host R1, with
     # strands swapped because R1 is the reverse complement of the RNA (R1 on the minus strand ->
@@ -780,16 +810,15 @@ rule bigwig:
     input:
         bam = f"{BAM_OUT}/r1/{{sample}}.bam",
         bai = f"{BAM_OUT}/r1/{{sample}}.bam.bai",
-        sf = f"{SIZEFACTOR_OUT}/size_factors.tsv"
+        sf = f"{SIZEFACTOR_OUT}/size_factors.tsv",
+        chrom_sizes = f"{BIGWIG_OUT}/host.chrom_sizes"
     output:
         plus = f"{BIGWIG_OUT}/{{sample}}.{{norm}}.plus.bw",
         minus = f"{BIGWIG_OUT}/{{sample}}.{{norm}}.minus.bw"
     log:
         f"{LOG_DIR}/bigwig/{{sample}}.{{norm}}.log"
     params:
-        host_regex = HOST_REGEX,
-        minus_sign = -1 if config["bigwig"]["negate_minus"] else 1,
-        prefix = lambda w: f"{BIGWIG_OUT}/{w.sample}.{w.norm}"
+        minus_sign = -1 if config["bigwig"]["negate_minus"] else 1
     conda:
         "envs/bedtools.yaml"
     shell:
@@ -803,39 +832,47 @@ rule bigwig:
         scale=$(awk -v sf="$sf" 'BEGIN {{ printf "%.10g", 1 / sf }}')
         echo "size factor $sf -> scale $scale" > {log}
 
-        samtools view -H {input.bam} | \
-            awk -F '\\t' -v re='{params.host_regex}' '$1 == "@SQ" {{ n = substr($2, 4); l = substr($3, 4); if (n ~ re) print n "\\t" l }}' \
-            > {params.prefix}.chrom_sizes
-
         # R1 on the minus strand marks a plus-strand RNA 3' end, and vice versa
+        tmp=$(mktemp -d)
+        trap 'rm -rf "$tmp"' EXIT
         bedtools genomecov -ibam {input.bam} -bg -5 -strand - -scale "$scale" 2>> {log} | \
-            LC_COLLATE=C sort -k1,1 -k2,2n > {params.prefix}.plus.bg
+            LC_COLLATE=C sort -k1,1 -k2,2n -T "$tmp" > "$tmp/plus.bg"
         bedtools genomecov -ibam {input.bam} -bg -5 -strand + -scale "$scale" 2>> {log} | \
             awk -v m={params.minus_sign} 'BEGIN {{ OFS = "\\t" }} {{ $4 = m * $4; print }}' | \
-            LC_COLLATE=C sort -k1,1 -k2,2n > {params.prefix}.minus.bg
-        bedGraphToBigWig {params.prefix}.plus.bg {params.prefix}.chrom_sizes {output.plus} 2>> {log}
-        bedGraphToBigWig {params.prefix}.minus.bg {params.prefix}.chrom_sizes {output.minus} 2>> {log}
-        rm {params.prefix}.plus.bg {params.prefix}.minus.bg {params.prefix}.chrom_sizes
+            LC_COLLATE=C sort -k1,1 -k2,2n -T "$tmp" > "$tmp/minus.bg"
+        bedGraphToBigWig "$tmp/plus.bg" {input.chrom_sizes} {output.plus} 2>> {log}
+        bedGraphToBigWig "$tmp/minus.bg" {input.chrom_sizes} {output.minus} 2>> {log}
         """
 
 
 rule bigwig_group:
-    # Mean of the normalized per-sample tracks of a group (samples.csv `group` column). Missing
-    # positions count as 0 (no --skipNAs: with sparse 1-nt tracks it would drop most signal).
+    # Mean of the normalized per-sample tracks of a group (samples.csv `group` column), position by
+    # position; positions without signal in a sample count as 0. Works on the sparse bedGraphs
+    # (bedtools unionbedg), which is much faster than deepTools bigwigAverage at 1-nt resolution.
     input:
-        lambda w: expand(f"{BIGWIG_OUT}/{{sample}}.{w.norm}.{w.strand}.bw", sample=GROUPS[w.group])
+        bws = lambda w: expand(f"{BIGWIG_OUT}/{{sample}}.{w.norm}.{w.strand}.bw", sample=GROUPS[w.group]),
+        chrom_sizes = f"{BIGWIG_OUT}/host.chrom_sizes"
     output:
         f"{BIGWIG_OUT}/group/{{group}}.{{norm}}.{{strand}}.bw"
     log:
         f"{LOG_DIR}/bigwig_group/{{group}}.{{norm}}.{{strand}}.log"
-    threads:
-        config.get("bigwig", {}).get("threads", 4)
     conda:
-        "envs/deeptools.yaml"
+        "envs/bedtools.yaml"
     shell:
         """
-        bigwigAverage --bigwigs {input} --binSize 1 --outFileFormat bigwig \
-            --numberOfProcessors {threads} --outFileName {output} &> {log}
+        tmp=$(mktemp -d)
+        trap 'rm -rf "$tmp"' EXIT
+        bgs=""
+        i=0
+        for bw in {input.bws}; do
+            i=$((i + 1))
+            bigWigToBedGraph "$bw" "$tmp/$i.bg" 2>> {log}
+            bgs="$bgs $tmp/$i.bg"
+        done
+        bedtools unionbedg -i $bgs 2>> {log} | \
+            awk 'BEGIN {{ OFS = "\\t" }} {{ s = 0; for (i = 4; i <= NF; i++) s += $i; print $1, $2, $3, s / (NF - 3) }}' \
+            > "$tmp/mean.bg"
+        bedGraphToBigWig "$tmp/mean.bg" {input.chrom_sizes} {output} 2>> {log}
         """
 
 
@@ -852,7 +889,7 @@ def multiqc_inputs():
         inputs["dups"] = (expand(f"{LOG_DIR}/umi_extract/{{sample}}.log", sample=SAMPLES_LIST)
                           + expand(f"{LOG_DIR}/umi_dedup/{{sample}}.log", sample=SAMPLES_LIST))
     else:
-        inputs["dups"] = expand(f"{BAM_OUT}/{{sample}}.markdup.stats.txt", sample=SAMPLES_LIST)
+        inputs["dups"] = expand(f"{BAM_OUT}/{{sample}}.markdup.json", sample=SAMPLES_LIST)
     if PRESEQ_ENABLED:
         inputs["preseq"] = expand(f"{PRESEQ_OUT}/{{sample}}.ccurve.txt", sample=SAMPLES_LIST)
     return inputs

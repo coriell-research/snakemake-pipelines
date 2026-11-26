@@ -162,6 +162,9 @@ properties:
     properties:
       enabled:
         type: boolean
+      min_pct:
+        type: number
+        minimum: 0
 
   bigwig:
     type: object

@@ -31,7 +31,7 @@ Analysis decisions follow:
 Most rules resolve their tool through a pinned
 [snakemake wrapper](https://snakemake-wrappers.readthedocs.io) (v9.17.1: `fastp`, `bowtie2`,
 `featureCounts`, `MultiQC`) or a pinned conda environment in `envs/` (`samtools`, `umi_tools`,
-`bedtools`, `preseq`, `deepTools`). Snakemake builds both automatically when run with
+`bedtools` + UCSC tools, `preseq`). Snakemake builds both automatically when run with
 `--use-conda`. The annotation, dominant-TSS and size-factor steps are small `pandas`/`numpy`
 steps that run in the Snakemake environment itself, so no R is needed.
 
@@ -131,7 +131,7 @@ holds the RNA 5' end (e.g. Danko leChRO-seq, PRO-cap) are not supported.
 11. **Strand-specific bigWigs** (`bigwig/{sample}.{raw,depth,cpm,spikein}.{plus,minus}.bw`):
     - Made with `bedtools genomecov -5 -strand`, strands swapped.
     - 1-nt resolution, divided by the size factor.
-    - With a `group` column, `deepTools bigwigAverage` gives
+    - With a `group` column, the mean of the group's normalized tracks (`bedtools unionbedg`) gives
       `bigwig/group/{group}.{norm}.{strand}.bw`.
 12. **QC**, all collected in MultiQC:
     - fastp (adapter dimers, insert size: degraded libraries have short inserts)
@@ -197,8 +197,10 @@ Which factor to use:
   spike-in % differs clearly between samples. That percentage is in the MultiQC general stats.
 
 If the libraries have no spike-in, remove the `spikein` block or set `spikein: enabled: false`.
-If spike-in normalization is enabled but a sample has no spike-in fragments, the `size_factors`
-rule fails with an explanation.
+If spike-in normalization is enabled but a sample's spike-in fragments are below `spikein.min_pct`
+(default 0.1%) of host + spike-in, the `size_factors` rule fails with an explanation. A real
+spike-in gives about 1–5%; far less usually means no spike-in was added, and so few reads give an
+unreliable factor.
 
 ### Notes
 
