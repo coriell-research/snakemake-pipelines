@@ -4,6 +4,10 @@ work_dir: "results"
 # Only host transcripts (contigs matching host_contig_regex) are used, for the TSS windows.
 annotation_gtf: "/mnt/data/references/GRCh38/GENCODE/v48/gencode.v48.basic.annotation.with_dm6.gtf.gz"
 
+# Host genome FASTA (plain or gzipped) of the bowtie2 index; faSize takes the host contig lengths
+# from it (bigwig/host.chrom_sizes, for dREG and other UCSC tools)
+genome_fasta: "/mnt/data/references/GRCh38/GENCODE/v48/GRCh38.primary_assembly.genome.fa.gz"
+
 # Contig prefix marking spike-in (Drosophila) sequences in the combined reference. Fixed to "dm6_"
 # by generate-resources. The fly rDNA and mitochondrial contigs are left out of the spike-in count.
 spike_prefix: "dm6_"
@@ -84,9 +88,24 @@ spikein:
   min_pct: 0.1
 
 bigwig:
-  # true writes minus-strand values as negative (Danko lab / dREG convention; use with the raw
-  # tracks as dREG input)
+  # deepTools threads per bamCoverage / bigwigAverage job
+  threads: 6
+  # bin size (nt) of the replicate-averaged normalized group tracks (bigwigAverage; 50 is the
+  # deepTools default). Per-sample tracks, and the summed group raw tracks, are always 1 nt. 1 gives
+  # nt-resolution averages but runs far longer.
+  group_bin_size: 50
+  # true writes minus-strand values as negative (Danko lab / UCSC convention). dREG accepts either
+  # sign, as long as each strand has a single sign.
   negate_minus: false
 
 preseq:
   enabled: true
+
+# deepTools metagene profiles at the dominant TSS of active genes (profile/tss.{norm}.{cbind,rbind}.pdf),
+# from the group tracks when samples.csv has a `group` column, else from the sample tracks
+profile:
+  enabled: true
+  threads: 6
+  before: 1500   # nt upstream of the TSS
+  after: 1500    # nt downstream of the TSS
+  bin_size: 10   # computeMatrix bin size (nt)

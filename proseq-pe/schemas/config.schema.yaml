@@ -18,6 +18,7 @@ $defs:
       type: integer
 required:
   - annotation_gtf
+  - genome_fasta
   - spike_prefix
   - spikein_exclude_contigs
   - rdna_contigs
@@ -34,6 +35,10 @@ properties:
     type: string
 
   annotation_gtf:
+    type: string
+    minLength: 1
+
+  genome_fasta:
     type: string
     minLength: 1
 
@@ -175,6 +180,9 @@ properties:
         $ref: "#/$defs/threads"
       negate_minus:
         type: boolean
+      group_bin_size:
+        type: integer
+        minimum: 1
 
   preseq:
     type: object
@@ -182,3 +190,21 @@ properties:
     properties:
       enabled:
         type: boolean
+
+  profile:
+    type: object
+    additionalProperties: false
+    properties:
+      enabled:
+        type: boolean
+      threads:
+        $ref: "#/$defs/threads"
+      before:
+        type: integer
+        minimum: 0
+      after:
+        type: integer
+        minimum: 0
+      bin_size:
+        type: integer
+        minimum: 1
